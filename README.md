@@ -40,7 +40,7 @@ ShiftNote 用于记录事项、持续追加进展和整理交接记录，不要�
 
 ## 下载安装
 
-GitHub 当前公开版本为 [v0.2.0](https://github.com/kmoshan/shiftnote/releases/tag/v0.2.0)，**不包含本轮新增功能与安全修复**。包含版本检测兼容改动的本地 0.2.1 产物目录为 `release/ShiftNote-0.2.1-update-compat-windows-x64/`，便携包为同名 `.zip`，附 SHA-256 校验文件；尚未发布到 GitHub Releases。
+GitHub 当前公开版本为 [v0.2.0](https://github.com/kmoshan/shiftnote/releases/tag/v0.2.0)，**不包含本轮新增功能与安全修复**。包含版本检测兼容及明文模式备份入口修复的本地 0.2.1 产物目录为 `release/ShiftNote-0.2.1-backup-fix-windows-x64/`，便携包为同名 `.zip`，附 SHA-256 校验文件；尚未发布到 GitHub Releases。
 
 直接运行本地版本时，保留 `shiftnote.exe` 旁的 `shiftnote.portable` 文件；事项保存在同目录 `data/shiftnote.db`，WebView2 缓存保存在 `data/webview2/`。移动或备份便携版时请保留整个 `data` 目录。
 
@@ -90,7 +90,7 @@ npx --no-install playwright install chromium
 npm run test:e2e
 ```
 
-兼容更新功能后，前端单测 71 项、完整 MSVC Rust 测试 112 项通过；另手工执行 1 项真实 GitHub 联网测试通过。Rust 测试操作真实 SQLite、明文及加密文件与 Windows 文件锁，浏览器使用模拟 IPC。完整构建、浏览器回归与原生验收边界见 [测试清单](docs/TESTING.md)。
+当前前端单测 75 项、完整 MSVC Rust 测试 115 项、Edge 浏览器回归 9 项通过；合入更新功能时另手工执行 1 项真实 GitHub 联网测试通过。Rust 测试操作真实 SQLite、明文及加密文件与 Windows 文件锁，浏览器使用模拟 IPC。备份、跨模式恢复及交接导出的检查见 [专项记录](docs/BACKUP-VERIFICATION-2026-11-06.md)，完整构建与原生验收边界见 [测试清单](docs/TESTING.md)。
 
 若本机已有 Edge，可在 PowerShell 设置 `$env:PLAYWRIGHT_BROWSER_CHANNEL='msedge'` 后运行浏览器测试。
 
