@@ -40,7 +40,7 @@ ShiftNote 用于记录事项、持续追加进展和整理交接记录，不要�
 
 ## 下载安装
 
-已发布的 [v0.1.0 安装包](https://github.com/kmoshan/shiftnote/releases/tag/v0.1.0) **不包含本轮源码改动**。本地 0.2.1 产物目录为 `release/ShiftNote-0.2.1-windows-x64/`，附 SHA-256 校验文件；尚未发布到 GitHub Releases。
+GitHub 当前公开版本为 [v0.2.0](https://github.com/kmoshan/shiftnote/releases/tag/v0.2.0)，**不包含本轮新增功能与安全修复**。包含版本检测兼容改动的本地 0.2.1 产物目录为 `release/ShiftNote-0.2.1-update-compat-windows-x64/`，便携包为同名 `.zip`，附 SHA-256 校验文件；尚未发布到 GitHub Releases。
 
 直接运行本地版本时，保留 `shiftnote.exe` 旁的 `shiftnote.portable` 文件；事项保存在同目录 `data/shiftnote.db`，WebView2 缓存保存在 `data/webview2/`。移动或备份便携版时请保留整个 `data` 目录。
 
