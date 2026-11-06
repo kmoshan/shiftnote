@@ -320,7 +320,7 @@ onMounted(load)
           </form>
         </div>
 
-        <div v-else-if="stats" class="divide-y divide-[color:var(--sn-line)]">
+        <div v-if="!loading && stats" class="divide-y divide-[color:var(--sn-line)]">
           <div class="px-3.5 py-2.5">
             <div class="flex items-center gap-2">
               <span class="text-[11.5px] text-ink-3">数据库文件</span>

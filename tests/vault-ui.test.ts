@@ -9,6 +9,7 @@ import VaultUnlock from '@/components/VaultUnlock.vue'
 import SettingsView from '@/views/SettingsView.vue'
 import { api, ApiFailure } from '@/services/api'
 import { useTaskStore } from '@/stores/tasks'
+import { useHandoverStore } from '@/stores/handovers'
 import { useUiStore } from '@/stores/ui'
 import { useVaultStore } from '@/stores/vault'
 import { useToastStore } from '@/stores/toast'
@@ -347,4 +348,96 @@ it('enables encryption from settings, clearing secrets on failure and retry', as
   expect(useVaultStore().configured).toBe(true)
   expect(wrapper.find('[aria-label="设置新口令"]').exists()).toBe(false)
   expect(wrapper.text()).toContain('口令加密')
+})
+
+it.each([false, true])('backs up once while pending, shows the path, and supports failure retry (encrypted=%s)', async (encrypted) => {
+  vi.mocked(api.appInfo).mockResolvedValue({ ...settingsInfo(), encrypted })
+  mockSettingsStats()
+  let resolveBackup!: (value: { path: string; sizeBytes: number; createdAt: number }) => void
+  vi.mocked(api.dbBackup).mockReturnValueOnce(new Promise(resolve => { resolveBackup = resolve }))
+  const wrapper = mount(SettingsView)
+  await flushPromises()
+  const backup = wrapper.findAll('button').find(button => button.text() === '立即备份')!
+  await backup.trigger('click')
+  await backup.trigger('click')
+  expect(api.dbBackup).toHaveBeenCalledTimes(1)
+  expect(backup.element.matches(':disabled')).toBe(true)
+  const path = `C:\\ShiftNote\\backups\\中文 空格备份.${encrypted ? 'snbak' : 'db'}`
+  resolveBackup({ path, sizeBytes: 1024, createdAt: 1000 })
+  await flushPromises()
+  expect(wrapper.text()).toContain(`最近一次备份：${path}`)
+  expect(useToastStore().items.at(-1)?.message).toContain('备份完成')
+  vi.mocked(api.dbBackup).mockRejectedValueOnce(new ApiFailure('备份目录不可写'))
+  await backup.trigger('click')
+  await flushPromises()
+  expect(useToastStore().items.at(-1)?.message).toBe('备份目录不可写')
+  expect(backup.element.matches(':disabled')).toBe(false)
+  expect(wrapper.text()).toContain(path)
+  vi.mocked(api.dbBackup).mockResolvedValueOnce({ path: 'C:\\retry.snbak', sizeBytes: 2048, createdAt: 2000 })
+  await backup.trigger('click')
+  await flushPromises()
+  expect(api.dbBackup).toHaveBeenCalledTimes(3)
+  expect(wrapper.text()).toContain('最近一次备份：C:\\retry.snbak')
+})
+
+it('cancels backup selection without restoring and reports a file-dialog failure', async () => {
+  vi.mocked(api.appInfo).mockResolvedValue(settingsInfo())
+  mockSettingsStats()
+  vi.mocked(open).mockResolvedValueOnce(null)
+  const wrapper = mount(SettingsView)
+  await flushPromises()
+  const restore = wrapper.findAll('button').find(button => button.text() === '从备份恢复')!
+  await restore.trigger('click')
+  await flushPromises()
+  expect(document.querySelector('[role="dialog"]')).toBeNull()
+  expect(api.dbRestore).not.toHaveBeenCalled()
+  vi.mocked(open).mockRejectedValueOnce(new Error('无法打开文件选择器'))
+  await restore.trigger('click')
+  await flushPromises()
+  expect(useToastStore().items.at(-1)?.message).toBe('无法打开文件选择器')
+  expect(restore.element.matches(':disabled')).toBe(false)
+  expect(api.dbRestore).not.toHaveBeenCalled()
+})
+
+it('refreshes business stores, restored preferences and snapshot location after a confirmed restore', async () => {
+  useVaultStore().unlocked = true
+  localStorage.removeItem('shiftnote:last-author')
+  const tasks = useTaskStore()
+  const handovers = useHandoverStore()
+  tasks.selectedId = 'old-task'
+  tasks.getProgressDraft('old-task').content = '旧库未提交的草稿'
+  handovers.form.note = '旧库未提交的交接说明'
+  vi.mocked(api.appInfo).mockResolvedValue({ ...settingsInfo(), encrypted: false })
+  mockSettingsStats()
+  vi.mocked(api.pageTasks).mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0 })
+  vi.mocked(api.counts).mockResolvedValue({ all: 0, today: 0, open: 0, focus: 0, done: 0, hidden: 0, trash: 0, archived: 0 })
+  vi.mocked(api.settingsGet).mockImplementation(async key => key === 'theme' ? 'dark' : '恢复后的处理人')
+  const path = 'C:\\Backups\\中文 空格备份.db'
+  const snapshot = 'C:\\ShiftNote\\backups\\pre-restore-test.db'
+  vi.mocked(open).mockResolvedValue(path)
+  let resolveRestore!: (value: { sourcePath: string; snapshotPath: string; schemaVersion: number; taskCount: number; updateCount: number }) => void
+  vi.mocked(api.dbRestore).mockReturnValueOnce(new Promise(resolve => { resolveRestore = resolve }))
+  const wrapper = mount(SettingsView, { attachTo: document.body })
+  await flushPromises()
+  await wrapper.findAll('button').find(button => button.text() === '从备份恢复')!.trigger('click')
+  await flushPromises()
+  const form = document.querySelector('form[role="dialog"]')!
+  form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+  await flushPromises()
+  expect(api.dbRestore).toHaveBeenCalledExactlyOnceWith(path, undefined)
+  expect(Array.from(form.querySelectorAll('button')).every(button => button.disabled)).toBe(true)
+  expect(tasks.selectedId).toBe('old-task')
+  resolveRestore({ sourcePath: path, snapshotPath: snapshot, schemaVersion: 3, taskCount: 0, updateCount: 0 })
+  await flushPromises()
+  expect(document.querySelector('[role="dialog"]')).toBeNull()
+  expect(tasks.selectedId).toBeNull()
+  expect(tasks.progressDrafts).toEqual({})
+  expect(tasks.lastAuthor).toBe('恢复后的处理人')
+  expect(handovers.form.note).toBeNull()
+  expect(useUiStore().theme).toBe('dark')
+  expect(api.appInfo).toHaveBeenCalledTimes(2)
+  expect(api.dbStats).toHaveBeenCalledTimes(2)
+  expect(wrapper.text()).toContain(`恢复前的数据已快照到：${snapshot}`)
+  expect(wrapper.text()).toContain('备份以 .db 明文保存')
+  expect(useToastStore().items.at(-1)?.message).toContain('已恢复 0 条事项、0 条进展')
 })
