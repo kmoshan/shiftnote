@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: 类型检查与 Rust 测试
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: 安装前端依赖
+        run: npm ci
+
+      - name: 类型检查
+        run: npm run typecheck
+
+      # Tauri 的 generate_context! 需要前端产物目录存在
+      - name: 构建前端
+        run: npm run build
+
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 Cargo
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Rust 单元测试
+        run: cargo test --manifest-path src-tauri/Cargo.toml
