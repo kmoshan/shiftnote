@@ -501,3 +501,249 @@ fn encryption_publish_failure_keeps_plain_mode_and_allows_retry() {
     f.db().unlock_vault(PASSWORD, None, false).unwrap();
     assert_eq!(titles(f.db()), ["加密失败不能丢失记录"]);
 }
+
+fn backup_business_rows(db: &Db) -> Vec<Vec<Vec<rusqlite::types::Value>>> {
+    db.with_conn(|conn| {
+        let mut tables = Vec::new();
+        for table in [
+            "categories",
+            "tasks",
+            "task_updates",
+            "reminders",
+            "handovers",
+            "handover_tasks",
+            "settings",
+        ] {
+            // 首次设置标记由目标会话维护，比较其余全部业务字段（包括快照 JSON）。
+            let sql = if table == "settings" {
+                "SELECT key, value FROM settings WHERE key <> 'security.setup_complete'".to_string()
+            } else {
+                format!("SELECT * FROM {table}")
+            };
+            let mut statement = conn.prepare(&sql)?;
+            let columns = statement.column_count();
+            let mut rows = statement
+                .query_map([], |row| {
+                    (0..columns)
+                        .map(|index| row.get(index))
+                        .collect::<rusqlite::Result<Vec<rusqlite::types::Value>>>()
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows.sort_by_cached_key(|row| format!("{row:?}"));
+            tables.push(rows);
+        }
+        Ok(tables)
+    })
+    .unwrap()
+}
+
+#[test]
+fn complete_backup_roundtrip_preserves_all_tables_snapshots_and_exports_in_all_modes() {
+    use crate::models::{CreateTaskInput, HandoverItemInput, HandoverSaveInput, TaskPatch};
+
+    for source_encrypted in [false, true] {
+        let source = Fixture::new();
+        if source_encrypted {
+            source.unlock();
+        } else {
+            source.db().continue_without_password().unwrap();
+        }
+        let finalized = source
+            .db()
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO categories VALUES ('backup-category', '中文分类', '#112233', 7, 1, 1)",
+                    [],
+                )?;
+                let task = tasks::create(
+                    conn,
+                    &CreateTaskInput {
+                        title: "备份中文事项 *冻结标题*".into(),
+                        description: Some("说明首行\n说明次行".into()),
+                        department: Some("运维一部".into()),
+                        category_id: Some("backup-category".into()),
+                        recorded_at: Some(1000),
+                        priority: Some(0),
+                    },
+                )?;
+                conn.execute(
+                    "INSERT INTO reminders (task_id, enabled, interval_minutes, next_remind_at, created_at, updated_at)
+                     VALUES (?, 1, 120, 3000, 1000, 1000)",
+                    [&task.id],
+                )?;
+                let progress = updates::add(conn, &task.id, "进展原文\n第二行", Some("值班甲"))?;
+                let draft = handovers::save(
+                    conn,
+                    &HandoverSaveInput {
+                        id: None,
+                        title: "备份验证夜班".into(),
+                        period_start: progress.created_at - 1000,
+                        period_end: progress.created_at + 1000,
+                        shift_from: Some("甲".into()),
+                        shift_to: Some("乙".into()),
+                        note: Some("交接总备注".into()),
+                        items: vec![HandoverItemInput {
+                            task_id: task.id.clone(),
+                            section: "focus".into(),
+                            note: Some("逐条备注".into()),
+                            selected_update_ids: vec![progress.id.clone()],
+                        }],
+                    },
+                )?;
+                let finalized = handovers::finalize(conn, &draft.handover.id)?;
+                handovers::duplicate(conn, &finalized.handover.id)?;
+                tasks::update(
+                    conn,
+                    &task.id,
+                    &TaskPatch {
+                        title: Some("定稿后修改的实时标题".into()),
+                        ..Default::default()
+                    },
+                )?;
+                updates::edit(conn, &progress.id, "定稿后修改的实时进展")?;
+                tasks::set_completed(conn, &task.id, true)?;
+                settings::set(conn, "theme", "dark")?;
+                settings::set(conn, "last_author", "恢复后的处理人")?;
+                settings::set(conn, "update.lastCheckAt", "123456")?;
+                Ok(finalized)
+            })
+            .unwrap();
+        let expected = backup_business_rows(source.db());
+        assert!(expected.iter().all(|rows| !rows.is_empty()));
+        let backup = source.dir.join(format!(
+            "中文 空格备份.{}",
+            source.db().backup_extension().unwrap()
+        ));
+        source.db().backup_to(&backup).unwrap();
+        let original_backup = std::fs::read(&backup).unwrap();
+        assert_eq!(
+            crate::vault::is_encrypted(&backup).unwrap(),
+            source_encrypted
+        );
+
+        for target_encrypted in [false, true] {
+            let mut target = Fixture::new();
+            if target_encrypted {
+                target
+                    .db()
+                    .unlock_vault(OTHER_PASSWORD, Some(OTHER_PASSWORD), false)
+                    .unwrap();
+            } else {
+                target.db().continue_without_password().unwrap();
+            }
+            add(target.db(), "覆盖前应保留在快照的记录").unwrap();
+            let before = backup_business_rows(target.db());
+            let summary = target
+                .db()
+                .restore_with_password(&backup, source_encrypted.then_some(PASSWORD))
+                .unwrap();
+            assert_eq!(summary.schema_version, 3);
+            assert_eq!(summary.task_count, 1);
+            assert_eq!(summary.update_count, expected[2].len() as i64);
+            assert_eq!(backup_business_rows(target.db()), expected);
+            assert_eq!(
+                crate::vault::is_encrypted(Path::new(&summary.snapshot_path)).unwrap(),
+                target_encrypted
+            );
+            assert_eq!(std::fs::read(&backup).unwrap(), original_backup);
+            target.reopen();
+            if target_encrypted {
+                assert!(!target.db().vault_status().unwrap().unlocked);
+                target
+                    .db()
+                    .unlock_vault(OTHER_PASSWORD, None, false)
+                    .unwrap();
+            }
+            assert_eq!(
+                target.db().vault_status().unwrap().configured,
+                target_encrypted
+            );
+            assert!(target.db().vault_status().unwrap().unlocked);
+            assert_eq!(backup_business_rows(target.db()), expected);
+            let restored = target
+                .db()
+                .with_conn(|conn| handovers::get(conn, &finalized.handover.id))
+                .unwrap();
+            for (format, extension) in [("markdown", "md"), ("txt", "txt")] {
+                let expected_text = crate::export::render(&finalized, format).unwrap();
+                let path = target.dir.join(format!("恢复后 中文交接.{extension}"));
+                crate::export::export(&restored, format, &path, false).unwrap();
+                assert_eq!(std::fs::read(&path).unwrap(), expected_text.as_bytes());
+                assert!(expected_text.contains("进展原文"));
+                assert!(!expected_text.contains("定稿后修改"));
+            }
+            target
+                .db()
+                .restore_from(Path::new(&summary.snapshot_path))
+                .unwrap();
+            assert_eq!(backup_business_rows(target.db()), before);
+            add(target.db(), "恢复和回退后仍可写入").unwrap();
+        }
+    }
+}
+
+#[test]
+fn backup_never_overwrites_an_existing_file_in_plain_or_encrypted_mode() {
+    for encrypted in [false, true] {
+        let f = Fixture::new();
+        if encrypted {
+            f.unlock();
+        } else {
+            f.db().continue_without_password().unwrap();
+        }
+        add(f.db(), "已有事项").unwrap();
+        let path = f.dir.join("不可覆盖的文件.db");
+        std::fs::write(&path, b"existing file content").unwrap();
+        assert!(f.db().backup_to(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"existing file content");
+        assert_eq!(titles(f.db()), ["已有事项"]);
+        assert_eq!(std::fs::read_dir(&f.dir).unwrap().count(), 3);
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn restore_publish_failure_preserves_current_data_and_retries_in_both_modes() {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let source = Fixture::new();
+    source.db().continue_without_password().unwrap();
+    add(source.db(), "可成功恢复的事项").unwrap();
+    let backup = source.dir.join("备份.db");
+    source.db().backup_to(&backup).unwrap();
+    let source_bytes = std::fs::read(&backup).unwrap();
+    for encrypted in [false, true] {
+        let target = Fixture::new();
+        if encrypted {
+            target.unlock();
+        } else {
+            target.db().continue_without_password().unwrap();
+        }
+        add(target.db(), "恢复失败时应保留").unwrap();
+        let before = std::fs::read(target.db().path()).unwrap();
+        let reader = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .open(target.db().path())
+            .unwrap();
+        assert!(target.db().restore_from(&backup).is_err());
+        assert_eq!(std::fs::read(target.db().path()).unwrap(), before);
+        assert_eq!(titles(target.db()), ["恢复失败时应保留"]);
+        assert!(target.db().vault_status().unwrap().unlocked);
+        assert_eq!(target.db().vault_status().unwrap().configured, encrypted);
+        assert_eq!(std::fs::read(&backup).unwrap(), source_bytes);
+        let snapshots = std::fs::read_dir(target.db().backups_dir())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect::<Vec<_>>();
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(
+            crate::vault::is_encrypted(&snapshots[0]).unwrap(),
+            encrypted
+        );
+        drop(reader);
+        target.db().restore_from(&backup).unwrap();
+        assert_eq!(titles(target.db()), ["可成功恢复的事项"]);
+        add(target.db(), "文件释放后继续使用").unwrap();
+    }
+}
