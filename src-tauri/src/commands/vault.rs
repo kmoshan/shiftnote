@@ -31,3 +31,27 @@ pub async fn vault_unlock(
     .await
     .map_err(|_| AppError::Other("解锁任务中断，请重试或重启应用".into()))?
 }
+
+#[tauri::command]
+pub async fn vault_skip(state: State<'_, AppState>) -> AppResult<()> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || db.continue_without_password())
+        .await
+        .map_err(|_| AppError::Other("打开数据任务中断，请重试".into()))?
+}
+
+#[tauri::command]
+pub async fn vault_enable_encryption(
+    state: State<'_, AppState>,
+    password: String,
+    confirm_password: String,
+) -> AppResult<()> {
+    let password = Zeroizing::new(password);
+    let confirmation = Zeroizing::new(confirm_password);
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        db.enable_encryption(&password, Some(&confirmation))
+    })
+    .await
+    .map_err(|_| AppError::Other("启用加密任务中断，请重试".into()))?
+}

@@ -66,7 +66,7 @@ pub struct Db {
     schema_version: AtomicI64,
     requires_vault: bool,
     unlocked: AtomicBool,
-    vault: Mutex<Option<crate::vault::VaultSession>>,
+    vault: Mutex<Option<vault_storage::StorageSession>>,
     _instance_lock: Option<std::fs::File>,
 }
 
@@ -182,7 +182,7 @@ impl Db {
             .lock()
             .map_err(|_| AppError::Other("数据库连接状态异常，请重启应用".into()))?;
         if !self.unlocked.load(Ordering::Acquire) {
-            return Err(AppError::validation("请先输入口令解锁本地数据"));
+            return Err(AppError::validation("请先完成首次设置或解锁本地数据"));
         }
         Ok(guard)
     }

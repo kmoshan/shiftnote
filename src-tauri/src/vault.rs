@@ -252,10 +252,10 @@ impl Drop for TemporaryFile {
     }
 }
 
-fn atomic_write(path: &Path, bytes: &[u8], overwrite: bool) -> AppResult<()> {
+pub(crate) fn atomic_write(path: &Path, bytes: &[u8], overwrite: bool) -> AppResult<()> {
     let parent = path
         .parent()
-        .ok_or_else(|| AppError::validation("加密文件路径无效"))?;
+        .ok_or_else(|| AppError::validation("数据文件路径无效"))?;
     fs::create_dir_all(parent)?;
     let temporary =
         TemporaryFile(parent.join(format!(".shiftnote-{}.encrypted-tmp", uuid::Uuid::new_v4())));

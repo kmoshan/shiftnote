@@ -371,3 +371,133 @@ fn source_lease_blocks_concurrent_write_handles_but_allows_atomic_publish() {
     assert_eq!(titles(f.db()).len(), 2);
     drop(lease);
 }
+
+#[test]
+fn skipping_setup_persists_plaintext_and_reopens_without_another_prompt() {
+    let mut f = Fixture::new();
+    f.db().continue_without_password().unwrap();
+    add(f.db(), "跳过口令后的记录").unwrap();
+    assert!(!crate::vault::is_encrypted(f.db().path()).unwrap());
+    assert_eq!(f.db().backup_extension().unwrap(), "db");
+    let plain =
+        Connection::open_with_flags(f.db().path(), OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    assert_eq!(
+        plain
+            .query_row("SELECT title FROM tasks", [], |row| row.get::<_, String>(0))
+            .unwrap(),
+        "跳过口令后的记录"
+    );
+    drop(plain);
+    f.reopen();
+    let status = f.db().vault_status().unwrap();
+    assert!(status.unlocked);
+    assert!(!status.configured);
+    assert!(!status.legacy);
+    assert_eq!(titles(f.db()), ["跳过口令后的记录"]);
+    let failed: AppResult<()> = f.db().with_conn(|conn| {
+        super::settings::set(conn, "temporary", "discard")?;
+        Err(AppError::Other("模拟业务失败".into()))
+    });
+    assert!(failed.is_err());
+    assert_eq!(
+        f.db()
+            .with_conn(|conn| super::settings::get(conn, "temporary"))
+            .unwrap(),
+        None
+    );
+    add(f.db(), "重启后的新增").unwrap();
+    f.reopen();
+    assert_eq!(titles(f.db()).len(), 2);
+}
+
+#[test]
+fn settings_can_encrypt_existing_plaintext_without_losing_records() {
+    let mut f = Fixture::new();
+    f.db().continue_without_password().unwrap();
+    add(f.db(), "启用加密前的记录").unwrap();
+    let before = std::fs::read(f.db().path()).unwrap();
+    assert!(f.db().enable_encryption("short", Some("short")).is_err());
+    assert_eq!(std::fs::read(f.db().path()).unwrap(), before);
+    f.db().enable_encryption(PASSWORD, Some(PASSWORD)).unwrap();
+    assert!(crate::vault::is_encrypted(f.db().path()).unwrap());
+    assert_eq!(f.db().backup_extension().unwrap(), "snbak");
+    assert!(f.db().vault_status().unwrap().configured);
+    let encrypted = std::fs::read(f.db().path()).unwrap();
+    f.reopen();
+    assert!(!f.db().vault_status().unwrap().unlocked);
+    assert!(f.db().continue_without_password().is_err());
+    assert_eq!(std::fs::read(f.db().path()).unwrap(), encrypted);
+    f.db().unlock_vault(PASSWORD, None, false).unwrap();
+    assert_eq!(titles(f.db()), ["启用加密前的记录"]);
+}
+
+#[test]
+fn plain_mode_backups_and_restore_preserve_the_users_encryption_choice() {
+    let mut target = Fixture::new();
+    target.db().continue_without_password().unwrap();
+    add(target.db(), "当前普通库记录").unwrap();
+    let own_backup = target.dir.join("own.db");
+    target.db().backup_to(&own_backup).unwrap();
+    assert!(!crate::vault::is_encrypted(&own_backup).unwrap());
+    let source = Fixture::new();
+    source.unlock();
+    add(source.db(), "来自加密备份").unwrap();
+    let encrypted_backup = source.dir.join("encrypted.snbak");
+    source.db().backup_to(&encrypted_backup).unwrap();
+    assert!(target
+        .db()
+        .restore_with_password(&encrypted_backup, None)
+        .is_err());
+    assert_eq!(titles(target.db()), ["当前普通库记录"]);
+    let summary = target
+        .db()
+        .restore_with_password(&encrypted_backup, Some(PASSWORD))
+        .unwrap();
+    assert!(summary.snapshot_path.ends_with(".db"));
+    assert!(!crate::vault::is_encrypted(Path::new(&summary.snapshot_path)).unwrap());
+    target.reopen();
+    assert!(target.db().vault_status().unwrap().unlocked);
+    assert!(!target.db().vault_status().unwrap().configured);
+    assert_eq!(titles(target.db()), ["来自加密备份"]);
+    target.db().restore_from(&own_backup).unwrap();
+    assert_eq!(titles(target.db()), ["当前普通库记录"]);
+    assert!(target.db().encrypt_legacy_backups().is_err());
+}
+
+#[test]
+fn skipping_legacy_setup_preserves_existing_data_and_migrates_once() {
+    let mut f = Fixture::new();
+    let legacy = Db::open_or_recover(f.db().path()).unwrap().db;
+    add(&legacy, "旧版已有记录").unwrap();
+    drop(legacy);
+    f.db().continue_without_password().unwrap();
+    assert_eq!(titles(f.db()), ["旧版已有记录"]);
+    f.reopen();
+    assert!(f.db().vault_status().unwrap().unlocked);
+    assert!(!f.db().vault_status().unwrap().legacy);
+    assert_eq!(titles(f.db()), ["旧版已有记录"]);
+}
+
+#[cfg(windows)]
+#[test]
+fn encryption_publish_failure_keeps_plain_mode_and_allows_retry() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let mut f = Fixture::new();
+    f.db().continue_without_password().unwrap();
+    add(f.db(), "加密失败不能丢失记录").unwrap();
+    let before = std::fs::read(f.db().path()).unwrap();
+    let reader = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(1)
+        .open(f.db().path())
+        .unwrap();
+    assert!(f.db().enable_encryption(PASSWORD, Some(PASSWORD)).is_err());
+    assert_eq!(std::fs::read(f.db().path()).unwrap(), before);
+    assert!(f.db().vault_status().unwrap().unlocked);
+    assert!(!f.db().vault_status().unwrap().configured);
+    drop(reader);
+    f.db().enable_encryption(PASSWORD, Some(PASSWORD)).unwrap();
+    f.reopen();
+    f.db().unlock_vault(PASSWORD, None, false).unwrap();
+    assert_eq!(titles(f.db()), ["加密失败不能丢失记录"]);
+}

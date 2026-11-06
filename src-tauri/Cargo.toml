@@ -1,6 +1,6 @@
 [package]
 name = "shiftnote"
-version = "0.2.0"
+version = "0.2.1"
 description = "ShiftNote - 轻量级交接班管理与事项跟踪"
 authors = ["ShiftNote"]
 edition = "2021"

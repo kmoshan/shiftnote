@@ -41,8 +41,9 @@ pub fn db_stats(state: State<'_, AppState>) -> AppResult<DbStats> {
 #[tauri::command]
 pub fn db_backup(state: State<'_, AppState>) -> AppResult<BackupInfo> {
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
+    let extension = state.db.backup_extension()?;
     let dest: PathBuf = state.db.backups_dir().join(format!(
-        "shiftnote-backup-{stamp}-{}.snbak",
+        "shiftnote-backup-{stamp}-{}.{extension}",
         uuid::Uuid::new_v4()
     ));
 

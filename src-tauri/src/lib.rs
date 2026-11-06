@@ -1,7 +1,7 @@
 //! ShiftNote —— 轻量级交接班与事项跟踪工具。
 //!
 //! 架构：Vue 3 前端（WebView2）通过 Tauri 命令层访问 Rust 侧的 SQLite 仓储。
-//! 业务数据以口令加密文件保存在本地；WebView2 自身诊断遵循其运行时设置。
+//! 业务数据保存在本地，可选口令加密；WebView2 自身诊断遵循其运行时设置。
 
 pub mod commands;
 pub mod db;
@@ -117,6 +117,8 @@ pub fn run() {
             commands::app::db_encrypt_legacy_backups,
             commands::vault::vault_status,
             commands::vault::vault_unlock,
+            commands::vault::vault_skip,
+            commands::vault::vault_enable_encryption,
             commands::settings::settings_get,
             commands::settings::settings_all,
             commands::settings::settings_set,

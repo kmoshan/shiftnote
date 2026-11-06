@@ -1,4 +1,4 @@
-//! 口令会话只持有内存 SQLite；落盘和恢复快照始终经过认证加密。
+//! SQLite 在内存中运行；根据用户选择保存为普通数据库或口令加密文件。
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
@@ -15,6 +15,62 @@ use super::{copy_database, migrations, sidecar_path, Db};
 use crate::error::{AppError, AppResult};
 use crate::models::RestoreSummary;
 use crate::vault::{self, VaultSession, VaultStatus};
+
+const SETUP_COMPLETE: &str = "security.setup_complete";
+
+pub(super) enum StorageSession {
+    Plain,
+    Encrypted(VaultSession),
+}
+
+impl StorageSession {
+    pub(super) fn extension(&self) -> &'static str {
+        match self {
+            Self::Plain => "db",
+            Self::Encrypted(_) => "snbak",
+        }
+    }
+
+    pub(super) fn write(
+        &self,
+        conn: &mut Connection,
+        path: &Path,
+        overwrite: bool,
+    ) -> AppResult<u64> {
+        match self {
+            Self::Encrypted(session) => session.write(conn, path, overwrite),
+            Self::Plain => {
+                let image = conn.serialize(rusqlite::MAIN_DB)?;
+                if image.len() > vault::MAX_IMAGE_BYTES {
+                    return Err(AppError::validation("数据库超过 128 MiB 存储上限"));
+                }
+                vault::atomic_write(path, &image, overwrite)?;
+                Ok(image.len() as u64)
+            }
+        }
+    }
+
+    fn load_current(&self, path: &Path) -> AppResult<Connection> {
+        match self {
+            Self::Encrypted(session) => session.load_current(path),
+            Self::Plain => read_plain_backup(path),
+        }
+    }
+
+    fn read_backup(&self, path: &Path, password: Option<&str>) -> AppResult<Connection> {
+        match self {
+            Self::Encrypted(session) => session.read_backup(path, password),
+            Self::Plain => {
+                let password = password
+                    .filter(|password| !password.is_empty())
+                    .ok_or_else(|| {
+                        AppError::validation("此备份已加密，请输入生成备份时的原口令")
+                    })?;
+                Ok(VaultSession::open(path, password)?.1)
+            }
+        }
+    }
+}
 
 #[derive(Clone, PartialEq, Eq)]
 pub(super) struct SourceFingerprint {
@@ -270,7 +326,7 @@ fn convert_legacy_to_memory(path: &Path) -> AppResult<(Connection, SourceLease)>
     let mode: String = budget.query_row("PRAGMA journal_mode=DELETE", [], |row| row.get(0))?;
     if !mode.eq_ignore_ascii_case("delete") {
         return Err(AppError::Conflict(
-            "旧数据库日志仍被占用，未执行加密替换".into(),
+            "旧数据库日志仍被占用，未替换数据文件".into(),
         ));
     }
     let mut staged = memory_connection()?;
@@ -286,7 +342,7 @@ fn convert_legacy_to_memory(path: &Path) -> AppResult<(Connection, SourceLease)>
         match fs::metadata(sidecar) {
             Ok(metadata) if metadata.len() != 0 => {
                 return Err(AppError::Conflict(
-                    "旧数据库日志发生变化，未执行加密替换".into(),
+                    "旧数据库日志发生变化，未替换数据文件".into(),
                 ))
             }
             Ok(_) => {}
@@ -313,7 +369,7 @@ impl Db {
             fs::create_dir_all(parent)?;
         }
         let instance_lock = vault::lock_vault(path)?;
-        Ok(Self {
+        let db = Self {
             conn: Mutex::new(memory_connection()?),
             path: path.to_path_buf(),
             schema_version: AtomicI64::new(0),
@@ -321,7 +377,16 @@ impl Db {
             unlocked: AtomicBool::new(false),
             vault: Mutex::new(None),
             _instance_lock: Some(instance_lock),
-        })
+        };
+        // 只有已明确跳过的普通库自动进入；已有密文永远不自动降级。
+        if path.try_exists()? && !vault::is_encrypted(path)? {
+            let staged = read_plain_backup(path)?;
+            if super::settings::get(&staged, SETUP_COMPLETE)?.as_deref() == Some("1") {
+                drop(staged);
+                db.continue_without_password()?;
+            }
+        }
+        Ok(db)
     }
 
     pub fn vault_status(&self) -> AppResult<VaultStatus> {
@@ -330,8 +395,82 @@ impl Db {
         Ok(VaultStatus {
             configured,
             unlocked: self.unlocked.load(Ordering::Acquire),
-            legacy: exists && !configured,
+            legacy: exists && !configured && !self.unlocked.load(Ordering::Acquire),
         })
+    }
+
+    pub fn continue_without_password(&self) -> AppResult<()> {
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|_| AppError::Other("数据库连接状态异常".into()))?;
+        if self.unlocked.load(Ordering::Acquire) {
+            return Err(AppError::Conflict("数据库已打开".into()));
+        }
+        let mut session = self
+            .vault
+            .lock()
+            .map_err(|_| AppError::Other("存储会话状态异常".into()))?;
+        let status = self.vault_status()?;
+        if status.configured {
+            return Err(AppError::validation("已有数据已加密，必须输入原口令解锁"));
+        }
+        let (mut staged, mut lease) = if status.legacy {
+            let (staged, lease) = convert_legacy_to_memory(&self.path)?;
+            (staged, Some(lease))
+        } else {
+            let mut staged = memory_connection()?;
+            migrations::apply(&mut staged)?;
+            (staged, None)
+        };
+        super::settings::set(&staged, SETUP_COMPLETE, "1")?;
+        let version = {
+            let budget = SqlBudget::new(&mut staged, &limits())?;
+            restore_validation::validate_database(&budget, &limits())?.0
+        };
+        if let Some(lease) = lease.as_mut() {
+            lease.verify_unchanged(&self.path)?;
+        }
+        StorageSession::Plain.write(&mut staged, &self.path, status.legacy)?;
+        *conn = staged;
+        *session = Some(StorageSession::Plain);
+        self.set_schema_version(version);
+        self.unlocked.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    pub fn enable_encryption(&self, password: &str, confirm: Option<&str>) -> AppResult<()> {
+        vault::validate_new_password(password, confirm)?;
+        let mut conn = self.lock()?;
+        let mut session = self
+            .vault
+            .lock()
+            .map_err(|_| AppError::Other("存储会话状态异常".into()))?;
+        if !matches!(session.as_ref(), Some(StorageSession::Plain)) {
+            return Err(AppError::Conflict("已启用口令加密，或存储尚未打开".into()));
+        }
+        let encrypted = VaultSession::new(password)?;
+        {
+            let budget = SqlBudget::new(&mut conn, &limits())?;
+            restore_validation::validate_database(&budget, &limits())?;
+        }
+        let mut lease = SourceLease::acquire(&self.path)?;
+        lease.verify_unchanged(&self.path)?;
+        encrypted.write(&mut conn, &self.path, true)?;
+        *session = Some(StorageSession::Encrypted(encrypted));
+        Ok(())
+    }
+
+    pub fn backup_extension(&self) -> AppResult<&'static str> {
+        let _conn = self.lock()?;
+        let session = self
+            .vault
+            .lock()
+            .map_err(|_| AppError::Other("存储会话状态异常".into()))?;
+        Ok(session
+            .as_ref()
+            .ok_or_else(|| AppError::validation("本地数据尚未打开"))?
+            .extension())
     }
 
     pub fn unlock_vault(
@@ -385,7 +524,7 @@ impl Db {
         drop(legacy_lease);
         let version = migrations::current_version(&staged)?;
         *conn = staged;
-        *session_guard = Some(session);
+        *session_guard = Some(StorageSession::Encrypted(session));
         self.set_schema_version(version);
         self.unlocked.store(true, Ordering::Release);
         Ok(())
@@ -401,11 +540,11 @@ impl Db {
         }
         let mut session_guard = self.vault.lock().map_err(|_| {
             self.unlocked.store(false, Ordering::Release);
-            AppError::Other("加密会话状态异常，已锁定，请重启应用".into())
+            AppError::Other("存储会话状态异常，已锁定，请重启应用".into())
         })?;
         let session = session_guard.as_ref().ok_or_else(|| {
             self.unlocked.store(false, Ordering::Release);
-            AppError::validation("请先输入口令解锁本地数据")
+            AppError::validation("请先完成首次设置或解锁本地数据")
         })?;
         let result: AppResult<()> = (|| {
             if !conn.is_autocommit() {
@@ -441,7 +580,7 @@ impl Db {
     fn reload_persisted(
         &self,
         conn: &mut Connection,
-        session: &mut Option<VaultSession>,
+        session: &mut Option<StorageSession>,
     ) -> AppResult<()> {
         let reload: AppResult<(Connection, i64)> = (|| {
             let mut previous = session
@@ -488,7 +627,7 @@ impl Db {
         }
         let mut session = self.vault.lock().map_err(|_| {
             self.unlocked.store(false, Ordering::Release);
-            AppError::Other("加密会话状态异常，已锁定，请重启应用".into())
+            AppError::Other("存储会话状态异常，已锁定，请重启应用".into())
         })?;
         self.reload_persisted(conn, &mut session).map_err(|error| {
             AppError::Other(format!(
@@ -524,15 +663,18 @@ impl Db {
         } else {
             read_plain_backup(&source)?
         };
+        // 恢复数据不改变当前是否启用加密的选择，也不重新弹首次设置。
+        super::settings::set(&staged, SETUP_COMPLETE, "1")?;
         let summary = {
             let budget = SqlBudget::new(&mut staged, &limits())?;
             restore_validation::validate_database(&budget, &limits())?
         };
         fs::create_dir_all(self.backups_dir())?;
         let snapshot = self.backups_dir().join(format!(
-            "pre-restore-{}-{}.snbak",
+            "pre-restore-{}-{}.{}",
             chrono::Local::now().format("%Y%m%d-%H%M%S"),
-            uuid::Uuid::new_v4()
+            uuid::Uuid::new_v4(),
+            session.extension()
         ));
         session.write(&mut conn, &snapshot, false)?;
         // 先原子保存新密文，最后才交换内存连接；任一失败不改当前会话数据。
@@ -579,6 +721,9 @@ impl Db {
         let session = session_guard
             .as_ref()
             .ok_or_else(|| AppError::validation("请先解锁本地数据"))?;
+        if !matches!(session, StorageSession::Encrypted(_)) {
+            return Err(AppError::validation("请先在设置中启用口令加密"));
+        }
         let entries = match fs::read_dir(self.backups_dir()) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok((0, 0)),
