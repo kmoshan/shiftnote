@@ -4,7 +4,8 @@ use crate::db::tasks as repo;
 use crate::db::updates as update_repo;
 use crate::error::AppResult;
 use crate::models::{
-    Counts, CreateTaskInput, Task, TaskDetail, TaskFilter, TaskPatch, TaskUpdate,
+    Counts, CreateTaskInput, Task, TaskDetail, TaskFilter, TaskMoveInput, TaskPage, TaskPatch,
+    TaskUpdate,
 };
 use crate::state::AppState;
 
@@ -12,6 +13,29 @@ use crate::state::AppState;
 pub fn task_list(state: State<'_, AppState>, filter: Option<TaskFilter>) -> AppResult<Vec<Task>> {
     let filter = filter.unwrap_or_default();
     state.db.with_conn(|conn| repo::list(conn, &filter))
+}
+
+#[tauri::command]
+pub fn task_page(state: State<'_, AppState>, filter: Option<TaskFilter>) -> AppResult<TaskPage> {
+    state
+        .db
+        .with_conn(|conn| repo::page(conn, &filter.unwrap_or_default()))
+}
+
+#[tauri::command]
+pub fn task_set_archived(
+    state: State<'_, AppState>,
+    id: String,
+    archived: bool,
+) -> AppResult<Task> {
+    state
+        .db
+        .with_conn(|conn| repo::set_archived(conn, &id, archived))
+}
+
+#[tauri::command]
+pub fn task_move(state: State<'_, AppState>, input: TaskMoveInput) -> AppResult<()> {
+    state.db.with_conn(|conn| repo::move_task(conn, &input))
 }
 
 #[tauri::command]
@@ -121,7 +145,9 @@ pub fn update_edit(
     id: String,
     content: String,
 ) -> AppResult<TaskUpdate> {
-    state.db.with_conn(|conn| update_repo::edit(conn, &id, &content))
+    state
+        .db
+        .with_conn(|conn| update_repo::edit(conn, &id, &content))
 }
 
 #[tauri::command]

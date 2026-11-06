@@ -5,5 +5,8 @@
 //! 因此注册时统一使用 `commands::<module>::<fn>` 的完整路径。
 
 pub mod app;
+pub mod batch;
+pub mod handovers;
 pub mod settings;
 pub mod tasks;
+pub mod vault;

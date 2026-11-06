@@ -15,6 +15,15 @@ pub enum AppError {
     #[error("{0}")]
     Validation(String),
 
+    #[error("{0}")]
+    Conflict(String),
+
+    #[error("{message}")]
+    Batch {
+        message: String,
+        invalid_ids: Vec<String>,
+    },
+
     #[error("未找到对应的数据：{0}")]
     NotFound(String),
 
@@ -37,6 +46,8 @@ impl AppError {
             Self::Db(_) => "db",
             Self::Io(_) => "io",
             Self::Validation(_) => "validation",
+            Self::Conflict(_) => "conflict",
+            Self::Batch { .. } => "batch_invalid",
             Self::NotFound(_) => "not_found",
             Self::Other(_) => "other",
         }
@@ -45,9 +56,12 @@ impl AppError {
 
 impl Serialize for AppError {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut state = serializer.serialize_struct("AppError", 2)?;
+        let mut state = serializer.serialize_struct("AppError", 3)?;
         state.serialize_field("code", self.code())?;
         state.serialize_field("message", &self.to_string())?;
+        if let Self::Batch { invalid_ids, .. } = self {
+            state.serialize_field("invalidIds", invalid_ids)?;
+        }
         state.end()
     }
 }

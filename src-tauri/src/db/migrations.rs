@@ -24,6 +24,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "department_and_recorded_at",
         sql: include_str!("../../migrations/002_department_and_recorded_at.sql"),
     },
+    Migration {
+        version: 3,
+        name: "handover_snapshots",
+        sql: include_str!("../../migrations/003_handover_snapshots.sql"),
+    },
 ];
 
 pub fn current_version(conn: &Connection) -> AppResult<i64> {
