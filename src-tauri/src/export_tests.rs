@@ -143,6 +143,31 @@ fn locked_windows_destination_preserves_original_file() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+#[cfg(windows)]
+#[test]
+fn transient_windows_reader_allows_atomic_export_after_release() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let dir = dir();
+    let path = dir.join("briefly-locked.txt");
+    std::fs::write(&path, b"original").unwrap();
+    let reader = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(1)
+        .open(&path)
+        .unwrap();
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        drop(reader);
+    });
+    let record = detail(true);
+    let expected = render(&record, "txt").unwrap();
+    export(&record, "txt", &path, true).unwrap();
+    release.join().unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), expected.as_bytes());
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 #[test]
 fn render_orders_sections_and_items_even_if_input_order_changes() {
     let mut d = detail(true);

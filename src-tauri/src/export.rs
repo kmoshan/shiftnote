@@ -238,21 +238,33 @@ pub(crate) fn publish(source: &Path, target: &Path, overwrite: bool) -> AppResul
         // ReplaceFile opens the old file for READ|DELETE, which also permits a
         // migration's READ|DELETE sharing lease to stay held across publication.
         // MoveFileEx alone can request write access and fail under that lease.
-        if unsafe {
-            ReplaceFileW(
-                to.as_ptr(),
-                from.as_ptr(),
-                std::ptr::null(),
-                0,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-            )
-        } != 0
-        {
-            return Ok(());
-        }
-        let error = std::io::Error::last_os_error();
-        if error.raw_os_error() != Some(2) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+        loop {
+            if unsafe {
+                ReplaceFileW(
+                    to.as_ptr(),
+                    from.as_ptr(),
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                )
+            } != 0
+            {
+                return Ok(());
+            }
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() == Some(2) {
+                break;
+            }
+            // 共享冲突及 1175 保留原有文件名，可短暂重试；1176/1177 等
+            // 不保证相同状态的错误立即返回，不删除目标或放宽共享/ACL。
+            if matches!(error.raw_os_error(), Some(32 | 33 | 1175))
+                && std::time::Instant::now() < deadline
+            {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                continue;
+            }
             return Err(error.into());
         }
     }
