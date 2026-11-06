@@ -1,0 +1,447 @@
+@import "tailwindcss";
+
+/* 深色模式由 <html class="dark"> 控制 */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", "PingFang SC",
+    system-ui, sans-serif;
+  --font-mono: "Cascadia Mono", "Consolas", "Courier New", monospace;
+}
+
+/* ---------- 语义色板：浅色（默认） ---------- */
+:root {
+  color-scheme: light;
+
+  --sn-canvas: #f2f3f5;
+  --sn-panel: #ffffff;
+  --sn-panel-2: #fafbfc;
+  --sn-line: #e5e7eb;
+  --sn-line-strong: #d3d6db;
+  --sn-ink: #1c2024;
+  --sn-ink-2: #5c6672;
+  --sn-ink-3: #939ba5;
+  --sn-hover: #f2f4f6;
+  --sn-active: #e8eef9;
+  --sn-accent: #2f6feb;
+  --sn-accent-hover: #2560d4;
+  --sn-accent-soft: #edf3fe;
+  --sn-focus-ring: rgba(47, 111, 235, 0.18);
+
+  --sn-p0: #cf2f26;
+  --sn-p0-soft: #fdecea;
+  --sn-p1: #c2620a;
+  --sn-p1-soft: #fdf0e0;
+  --sn-p2: #2f6feb;
+  --sn-p2-soft: #eaf1fd;
+  --sn-p3: #6b7280;
+  --sn-p3-soft: #f1f2f4;
+
+  --sn-danger: #c9302c;
+  --sn-success: #1f7a4d;
+  --sn-shadow-pop: 0 12px 32px rgba(16, 24, 40, 0.14), 0 2px 6px rgba(16, 24, 40, 0.06);
+  --sn-shadow-card: 0 1px 2px rgba(16, 24, 40, 0.05);
+}
+
+/* ---------- 语义色板：深色 ---------- */
+.dark {
+  color-scheme: dark;
+
+  --sn-canvas: #131518;
+  --sn-panel: #1b1e22;
+  --sn-panel-2: #21252a;
+  --sn-line: #2b3036;
+  --sn-line-strong: #3a4048;
+  --sn-ink: #e7e9ec;
+  --sn-ink-2: #a7afb9;
+  --sn-ink-3: #78818c;
+  --sn-hover: #23272c;
+  --sn-active: #25303f;
+  --sn-accent: #4d8cf7;
+  --sn-accent-hover: #6aa0f9;
+  --sn-accent-soft: #1c2734;
+  --sn-focus-ring: rgba(77, 140, 247, 0.24);
+
+  --sn-p0: #f0736a;
+  --sn-p0-soft: #38201e;
+  --sn-p1: #e8a05a;
+  --sn-p1-soft: #372817;
+  --sn-p2: #6fa2f8;
+  --sn-p2-soft: #1c2a3d;
+  --sn-p3: #9aa2ac;
+  --sn-p3-soft: #262a2f;
+
+  --sn-danger: #f0736a;
+  --sn-success: #4fbf8b;
+  --sn-shadow-pop: 0 16px 40px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.35);
+  --sn-shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+/* 把语义变量注册成 Tailwind 颜色，便于 bg-panel / text-ink 等写法 */
+@theme inline {
+  --color-canvas: var(--sn-canvas);
+  --color-panel: var(--sn-panel);
+  --color-panel-2: var(--sn-panel-2);
+  --color-line: var(--sn-line);
+  --color-line-strong: var(--sn-line-strong);
+  --color-ink: var(--sn-ink);
+  --color-ink-2: var(--sn-ink-2);
+  --color-ink-3: var(--sn-ink-3);
+  --color-hover: var(--sn-hover);
+  --color-active: var(--sn-active);
+  --color-accent: var(--sn-accent);
+  --color-accent-soft: var(--sn-accent-soft);
+  --color-danger: var(--sn-danger);
+  --color-success: var(--sn-success);
+  --color-p0: var(--sn-p0);
+  --color-p0-soft: var(--sn-p0-soft);
+  --color-p1: var(--sn-p1);
+  --color-p1-soft: var(--sn-p1-soft);
+  --color-p2: var(--sn-p2);
+  --color-p2-soft: var(--sn-p2-soft);
+  --color-p3: var(--sn-p3);
+  --color-p3-soft: var(--sn-p3-soft);
+}
+
+@layer base {
+  html,
+  body,
+  #app {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--sn-canvas);
+    color: var(--sn-ink);
+    font-family: var(--font-sans);
+    font-size: 13px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    overflow: hidden;
+  }
+
+  /* 桌面应用不使用网页式的手型光标与文本选中，正文区域再单独放开 */
+  button,
+  [role="button"],
+  label,
+  summary {
+    cursor: default;
+    user-select: none;
+  }
+
+  input,
+  textarea {
+    font-family: inherit;
+    font-size: inherit;
+    color: inherit;
+  }
+
+  ::selection {
+    background: color-mix(in srgb, var(--sn-accent) 24%, transparent);
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--sn-line-strong) transparent;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: var(--sn-line-strong);
+    border: 3px solid transparent;
+    background-clip: content-box;
+    border-radius: 6px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--sn-ink-3);
+    background-clip: content-box;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--sn-accent);
+    outline-offset: 1px;
+  }
+}
+
+@layer components {
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    height: 28px;
+    padding: 0 10px;
+    border-radius: 6px;
+    border: 1px solid var(--sn-line);
+    background: var(--sn-panel);
+    color: var(--sn-ink);
+    font-size: 12.5px;
+    white-space: nowrap;
+    transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+  }
+
+  .btn:hover {
+    background: var(--sn-hover);
+  }
+
+  .btn:active {
+    transform: translateY(0.5px);
+  }
+
+  .btn:disabled {
+    opacity: 0.5;
+  }
+
+  .btn-primary {
+    background: var(--sn-accent);
+    border-color: var(--sn-accent);
+    color: #fff;
+  }
+
+  .btn-primary:hover {
+    background: var(--sn-accent-hover);
+    border-color: var(--sn-accent-hover);
+  }
+
+  .btn-ghost {
+    background: transparent;
+    border-color: transparent;
+    color: var(--sn-ink-2);
+  }
+
+  .btn-ghost:hover {
+    background: var(--sn-hover);
+    color: var(--sn-ink);
+  }
+
+  .btn-danger {
+    color: var(--sn-danger);
+  }
+
+  .btn-danger:hover {
+    background: var(--sn-p0-soft);
+    border-color: transparent;
+  }
+
+  .input {
+    width: 100%;
+    height: 30px;
+    padding: 0 9px;
+    border-radius: 6px;
+    border: 1px solid var(--sn-line);
+    background: var(--sn-panel);
+    color: var(--sn-ink);
+    outline: none;
+    transition: border-color 0.12s ease, box-shadow 0.12s ease;
+  }
+
+  .input::placeholder {
+    color: var(--sn-ink-3);
+  }
+
+  .input:focus {
+    border-color: var(--sn-accent);
+    box-shadow: 0 0 0 3px var(--sn-focus-ring);
+  }
+
+  textarea.input {
+    height: auto;
+    padding: 7px 9px;
+    line-height: 1.6;
+    resize: vertical;
+  }
+
+  /* 原生日期选择器：让图标在深色主题下也清晰 */
+  .date-input::-webkit-calendar-picker-indicator {
+    opacity: 0.55;
+    cursor: default;
+  }
+
+  .dark .date-input::-webkit-calendar-picker-indicator {
+    filter: invert(0.78);
+    opacity: 0.7;
+  }
+
+  .date-input::-webkit-datetime-edit {
+    padding: 0;
+  }
+
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 19px;
+    padding: 0 6px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+  }
+
+  .chip-p0 {
+    background: var(--sn-p0-soft);
+    color: var(--sn-p0);
+  }
+
+  .chip-p1 {
+    background: var(--sn-p1-soft);
+    color: var(--sn-p1);
+  }
+
+  .chip-p2 {
+    background: var(--sn-p2-soft);
+    color: var(--sn-p2);
+  }
+
+  .chip-p3 {
+    background: var(--sn-p3-soft);
+    color: var(--sn-p3);
+  }
+
+  .nav-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 30px;
+    padding: 0 9px;
+    border-radius: 6px;
+    color: var(--sn-ink-2);
+    font-size: 12.5px;
+    transition: background-color 0.12s ease, color 0.12s ease;
+  }
+
+  .nav-item:hover {
+    background: var(--sn-hover);
+    color: var(--sn-ink);
+  }
+
+  .nav-item.is-active {
+    background: var(--sn-active);
+    color: var(--sn-accent);
+    font-weight: 600;
+  }
+
+  .divider {
+    height: 1px;
+    background: var(--sn-line);
+  }
+
+  .menu-item {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    width: 100%;
+    height: 28px;
+    padding: 0 9px;
+    font-size: 12.5px;
+    color: var(--sn-ink);
+    text-align: left;
+  }
+
+  .menu-item:hover {
+    background: var(--sn-hover);
+  }
+
+  .menu-item.is-danger {
+    color: var(--sn-danger);
+  }
+
+  .menu-item.is-danger:hover {
+    background: var(--sn-p0-soft);
+  }
+
+  .filter-chip {
+    height: 22px;
+    padding: 0 7px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--sn-ink-3);
+    transition: background-color 0.12s ease, color 0.12s ease;
+  }
+
+  .filter-chip:hover {
+    background: var(--sn-hover);
+    color: var(--sn-ink);
+  }
+
+  .filter-chip.is-active {
+    background: var(--sn-accent-soft);
+    color: var(--sn-accent);
+  }
+
+  /* 列表行：悬停时浮出操作按钮 */
+  .task-row .row-actions {
+    opacity: 0;
+    transition: opacity 0.12s ease;
+  }
+
+  .task-row:hover .row-actions,
+  .task-row:focus-within .row-actions {
+    opacity: 1;
+  }
+}
+
+@layer utilities {
+  .drag-region {
+    -webkit-app-region: drag;
+  }
+
+  .no-drag {
+    -webkit-app-region: no-drag;
+  }
+
+  .line-clamp-1 {
+    display: -webkit-box;
+    -webkit-line-clamp: 1;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .line-clamp-2 {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .animate-fade-in {
+    animation: sn-fade-in 0.14s ease-out;
+  }
+
+  .animate-pop-in {
+    animation: sn-pop-in 0.16s cubic-bezier(0.2, 0.9, 0.3, 1);
+  }
+}
+
+@keyframes sn-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes sn-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
