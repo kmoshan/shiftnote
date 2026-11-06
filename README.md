@@ -11,9 +11,13 @@ ShiftNote 面向个人、值班人员和中小部门：用最少的操作记录�
 
 ### 下载安装
 
-前往 [Releases](https://github.com/kmoshan/shiftnote/releases/latest) 下载
-`ShiftNote_0.1.0_x64-setup.exe`（约 1.7 MB），双击安装即可，无需管理员权限。
+前往 [Releases](https://github.com/kmoshan/shiftnote/releases/latest) 下载最新的
+`ShiftNote_*_x64-setup.exe`（约 2 MB），双击安装即可，无需管理员权限。
 程序启动后数据保存在 `%APPDATA%\com.shiftnote.desktop\`，卸载不会主动删除数据。
+
+安装后在「设置 → 关于」里可以**检测更新**：启动时会静默检查一次（12 小时内不重复），
+有新版本会在顶部显示提示条，点击直达下载页。检查只读取 GitHub 上的公开版本号，
+不会发送任何本地数据。
 
 ---
 
@@ -45,6 +49,8 @@ ShiftNote 面向个人、值班人员和中小部门：用最少的操作记录�
 - **数据**：UUID 主键、毫秒时间戳、WAL、外键级联、版本化迁移（v1→v2 自动升级）、
   损坏自愈、在线备份，以及**从备份一键恢复**（覆盖前自动快照、失败自动回滚）。
 - **界面**：浅色/深色主题、三栏布局（侧边栏 / 列表 / 详情）、快捷键 Ctrl+N、Ctrl+F。
+- **更新**：启动静默检查 + 设置页手动「检测更新」，有新版本时顶部提示条直达下载页；
+  只读取 GitHub 公开版本号，直连失败会自动尝试系统代理。
 
 ---
 
@@ -131,13 +137,13 @@ npm run typecheck      # 仅类型检查
 产物位置：
 
 ```
-release\ShiftNote_0.1.0_x64-setup.exe          # 已复制到项目内，便于分发
-D:\dev\target\release\shiftnote.exe            # 免安装可执行文件
-D:\dev\target\release\bundle\nsis\ShiftNote_0.1.0_x64-setup.exe
+release\ShiftNote_<version>_x64-setup.exe        # 已复制到项目内，便于分发
+D:\dev\target\release\shiftnote.exe             # 免安装可执行文件
+D:\dev\target\release\bundle\nsis\ShiftNote_<version>_x64-setup.exe
 ```
 
-> 安装包 1.72 MiB，按当前用户安装到 `%LOCALAPPDATA%\ShiftNote`，无需管理员权限。
-> SHA256（0.1.0）：`10A11DBF960A66E9249DD6882D8C4B8338E93BE6F490B585F7AD0183C04ED1E7`
+> 安装包约 2.3 MiB，按当前用户安装（NSIS 会记住上次安装目录），无需管理员权限。
+> SHA256（0.2.0）：`B281ABFE69E7A931F1389195D6ECA3485CEA81E6B0CD8046C58AF86E9814F4FB`
 
 调试数据与正式数据相互隔离的技巧：
 

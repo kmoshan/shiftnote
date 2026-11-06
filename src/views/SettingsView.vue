@@ -1,10 +1,20 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { open } from '@tauri-apps/plugin-dialog'
-import { Check, Copy, Database, Moon, RotateCcw, Save, Sun } from '@lucide/vue'
+import {
+  Check,
+  Copy,
+  Database,
+  Download,
+  Moon,
+  RefreshCw,
+  RotateCcw,
+  Save,
+  Sun,
+} from '@lucide/vue'
 
 import { api, toApiFailure } from '@/services/api'
-import { formatBytes } from '@/services/format'
+import { formatBytes, formatSmart } from '@/services/format'
 import { useConfirmStore } from '@/stores/confirm'
 import { useTaskStore } from '@/stores/tasks'
 import { useToastStore } from '@/stores/toast'
@@ -25,6 +35,19 @@ const lastBackupPath = ref<string | null>(null)
 const lastRestoreSnapshot = ref<string | null>(null)
 
 const backupDir = computed(() => (info.value ? `${info.value.dataDir}\\backups` : '—'))
+
+const updateStatus = computed(() => {
+  if (ui.updateChecking) return '正在连接 GitHub 检查…'
+  if (ui.updateError) return ui.updateError
+  const latest = ui.updateInfo
+  if (!latest) return '尚未检查更新'
+  const when = formatSmart(latest.checkedAt)
+  if (latest.hasUpdate) {
+    return `发现新版本 v${latest.latestVersion}（${when} 检查，当前 v${latest.currentVersion}）`
+  }
+  const proxyHint = latest.usedProxy ? '，经系统代理' : ''
+  return `已是最新版本（${when} 检查${proxyHint}）`
+})
 
 async function load() {
   loading.value = true
@@ -238,13 +261,54 @@ onMounted(load)
 
       <!-- 关于 -->
       <div class="rounded-lg border border-line bg-panel">
-        <div class="border-b border-line px-3.5 py-2.5">
+        <div class="flex items-center gap-2 border-b border-line px-3.5 py-2.5">
           <h2 class="text-[12.5px] font-semibold text-ink">关于 ShiftNote</h2>
+          <button
+            type="button"
+            class="ml-auto btn h-7"
+            :disabled="ui.updateChecking"
+            title="从 GitHub Releases 检查是否有新版本"
+            @click="ui.checkForUpdates({ manual: true })"
+          >
+            <RefreshCw :size="12" :class="ui.updateChecking ? 'animate-spin' : ''" />
+            {{ ui.updateChecking ? '检查中…' : '检测更新' }}
+          </button>
         </div>
+
         <div class="space-y-1.5 px-3.5 py-3 text-[11.5px] text-ink-2">
           <p>版本 {{ info?.version ?? '—' }} · Tauri 2 + Vue 3 + SQLite</p>
+
+          <div class="flex flex-wrap items-center gap-2">
+            <p
+              class="min-w-0 flex-1"
+              :class="[
+                ui.updateError ? 'text-p0' : '',
+                ui.updateInfo?.hasUpdate && !ui.updateError ? 'text-accent' : 'text-ink-3',
+              ]"
+            >
+              {{ updateStatus }}
+            </p>
+            <button
+              v-if="ui.updateInfo?.hasUpdate"
+              type="button"
+              class="btn btn-primary h-7 shrink-0"
+              @click="ui.openReleasePage()"
+            >
+              <Download :size="12" />
+              下载 v{{ ui.updateInfo.latestVersion }}
+            </button>
+          </div>
+
+          <pre
+            v-if="ui.updateInfo?.hasUpdate && ui.updateInfo.notes"
+            class="max-h-[132px] overflow-y-auto whitespace-pre-wrap break-words rounded-md bg-panel-2 p-2 text-[10.5px] leading-relaxed text-ink-2"
+          >{{ ui.updateInfo.notes }}</pre>
+
           <p class="text-ink-3">
             轻量级交接班与事项跟踪工具。数据完全保存在本地，默认不上传任何内容。
+          </p>
+          <p class="text-ink-3">
+            检查更新只会向 GitHub 读取公开的版本号，不会发送任何本地数据。
           </p>
           <p v-if="info" class="text-ink-3">数据目录：{{ info.dataDir }}</p>
           <p v-if="info?.recoveredBackup" class="text-p0">

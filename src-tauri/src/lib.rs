@@ -32,6 +32,7 @@ fn resolve_data_dir(app: &tauri::AppHandle) -> Result<PathBuf, Box<dyn std::erro
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let data_dir = resolve_data_dir(app.handle())?;
             std::fs::create_dir_all(&data_dir)?;
@@ -82,6 +83,7 @@ pub fn run() {
             commands::tasks::update_add,
             commands::tasks::update_edit,
             commands::tasks::update_delete,
+            commands::update::check_update,
         ])
         .run(tauri::generate_context!())
         .expect("ShiftNote 启动失败");

@@ -1,7 +1,7 @@
 {
   "name": "shiftnote",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "ShiftNote - 轻量级交接班管理与事项跟踪桌面应用",
   "scripts": {

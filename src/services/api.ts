@@ -12,6 +12,7 @@ import type {
   TaskFilter,
   TaskPatch,
   TaskUpdate,
+  UpdateInfo,
 } from '@/types'
 
 /** 统一的调用失败对象：后端 AppError 会被序列化为 { code, message }。 */
@@ -63,6 +64,9 @@ export const api = {
   dbStats: () => call<DbStats>('db_stats'),
   dbBackup: () => call<BackupInfo>('db_backup'),
   dbRestore: (path: string) => call<RestoreSummary>('db_restore', { path }),
+
+  /** 检查 GitHub Releases 是否有新版本（只读，不上传任何数据） */
+  checkUpdate: () => call<UpdateInfo>('check_update'),
 
   settingsAll: () => call<Record<string, string>>('settings_all'),
   settingsGet: (key: string) => call<string | null>('settings_get', { key }),

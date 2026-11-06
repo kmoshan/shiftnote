@@ -12,12 +12,15 @@ cd src-tauri
 cargo test
 ```
 
-最近一次结果：**26 passed；0 failed**（耗时 0.16s）。
+最近一次结果：**29 passed；0 failed**（耗时约 0.2s）。
 
 | 用例 | 覆盖点 |
 | --- | --- |
 | `migrates_to_latest_version` | 迁移建表：tasks / task_updates / reminders / handovers / handover_tasks / categories / settings |
 | `migrates_v1_database_and_backfills_department_and_recorded_at` | v1 旧库自动升级：按 assignee 回填部门、按 created_at 回填记录时间，旧数据不丢 |
+| `parses_versions_with_and_without_prefix` | 版本号解析：`v1.2.3` / ` 1.2.3 ` 均可，非法串返回 None |
+| `compares_versions` | 版本比较：0.1.1 / 0.2.0 判定为更新，同版本不算更新 |
+| `parses_proxy_forms` | 系统代理串解析：`host:port` 与 `http=…;https=…` 两种写法 |
 | `day_bounds_are_ordered_and_cover_24h` | 本地“今天”边界计算（含夏令时容差） |
 | `only_corruption_triggers_recovery` | 只有真损坏才重建；锁冲突/权限错误不误伤数据库 |
 | `detects_corrupt_database_and_recovers` | 损坏的 .db 文件自动备份重建 |
@@ -100,6 +103,10 @@ Finished 1 bundle at: D:\dev\target\release\bundle\nsis\ShiftNote_0.1.0_x64-setu
 | 19 | 点击「展开 3 条」 | 就地展开全部 3 条，含时间、处理人、「最新」标记，按钮变「收起」 | ✅ 09:50 / 09:30 / 09:00 三条齐全 |
 | 20 | 点击「收起」 | 回到只显示最新一条 | ✅ |
 | 21 | 只有 1 条进展的事项 | 不显示展开按钮 | ✅ |
+| 22 | 0.2.0 启动时自动检查更新 | 12 小时内只查一次，最新版本与当前一致时不打扰 | ✅ 设置页显示「已是最新版本（今天 10:33 检查）」 |
+| 23 | 以 0.1.9 构建启动（仓库最新为 v0.2.0） | 顶部出现提示条「发现新版本 v0.2.0（当前 v0.1.9）」 | ✅ 提示条 + 「查看更新」/关闭按钮 |
+| 24 | 打开「设置 → 关于」 | 显示当前版本、发现新版本、检查时间、「下载 v0.2.0」按钮与版本说明摘要 | ✅ |
+| 25 | GitHub 直连失败时的兜底 | 自动读取 Windows 系统代理重试 | ✅ 单元测试覆盖代理串解析；本机经 127.0.0.1:7890 成功 |
 
 恢复前后核对：
 
