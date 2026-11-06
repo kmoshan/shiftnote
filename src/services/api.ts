@@ -92,6 +92,9 @@ export const api = {
     confirmPassword?: string,
     migrateLegacy = false
   ) => call<void>('vault_unlock', { password, confirmPassword, migrateLegacy }),
+  vaultSkip: () => call<void>('vault_skip'),
+  vaultEnableEncryption: (password: string, confirmPassword: string) =>
+    call<void>('vault_enable_encryption', { password, confirmPassword }),
   appInfo: () => call<AppInfo>('app_info'),
   dbStats: () => call<DbStats>('db_stats'),
   dbBackup: () => call<BackupInfo>('db_backup'),

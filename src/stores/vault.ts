@@ -54,6 +54,40 @@ export const useVaultStore = defineStore('vault', () => {
     }
   }
 
+  async function skip() {
+    if (busy.value || !checked.value || configured.value) return false
+    busy.value = true
+    error.value = ''
+    try {
+      await api.vaultSkip()
+      configured.value = false
+      unlocked.value = true
+      legacy.value = false
+      return true
+    } catch (caught) {
+      error.value = toApiFailure(caught).message
+      return false
+    } finally {
+      busy.value = false
+    }
+  }
+
+  async function enableEncryption(password: string, confirmation: string) {
+    if (busy.value || !unlocked.value || configured.value) return false
+    busy.value = true
+    error.value = ''
+    try {
+      await api.vaultEnableEncryption(password, confirmation)
+      configured.value = true
+      return true
+    } catch (caught) {
+      error.value = toApiFailure(caught).message
+      return false
+    } finally {
+      busy.value = false
+    }
+  }
+
   return {
     configured,
     unlocked,
@@ -64,5 +98,7 @@ export const useVaultStore = defineStore('vault', () => {
     error,
     initialize,
     unlock,
+    skip,
+    enableEncryption,
   }
 })

@@ -51,10 +51,17 @@ async function submit() {
     emit('unlocked')
   }
 }
+
+async function skip() {
+  password.value = ''
+  confirmation.value = ''
+  validationError.value = ''
+  if (await vault.skip()) emit('unlocked')
+}
 </script>
 
 <template>
-  <main class="flex h-full items-center justify-center bg-canvas p-6 text-ink">
+  <main class="flex h-full items-center justify-center overflow-y-auto bg-canvas p-6 text-ink">
     <section
       class="w-full max-w-md rounded-xl border border-line bg-panel p-6 shadow-sm"
       aria-labelledby="vault-title"
@@ -79,7 +86,7 @@ async function submit() {
         <p class="text-[12.5px] leading-relaxed text-ink-2">
           {{
             settingUp
-              ? '设置后，每次启动都需要输入口令，才能读取事项和交接记录。新口令至少需要 12 个字符。'
+              ? '口令加密可选，也可先跳过，之后在设置中启用。启用后每次启动需要解锁，新口令至少 12 个字符。'
               : '请输入数据加密口令，继续查看事项和交接记录。'
           }}
         </p>
@@ -136,6 +143,14 @@ async function submit() {
         <button class="btn btn-primary h-9 w-full" type="submit" :disabled="vault.busy">
           {{ vault.busy ? '正在解锁…' : settingUp ? '设置口令并解锁' : '解锁' }}
         </button>
+        <template v-if="settingUp">
+          <button class="btn h-9 w-full" type="button" :disabled="vault.busy" @click="skip">
+            暂不加密，直接进入
+          </button>
+          <p class="text-[11.5px] leading-relaxed text-ink-3">
+            跳过后数据库和备份以明文保存，后续启动不再提示；可在设置中启用口令加密。
+          </p>
+        </template>
         <p v-if="!settingUp" class="text-[11.5px] leading-relaxed text-ink-3">
           忘记口令将无法恢复数据，ShiftNote 不提供口令找回。
         </p>

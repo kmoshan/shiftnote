@@ -1,16 +1,22 @@
 import { expect, test, type Page } from '@playwright/test'
 
 /** Only this browser test supplies IPC; production never bypasses the vault. */
-async function installLockedIPC(page: Page, legacy = false) {
-  await page.addInitScript(({ legacy }) => {
+async function installLockedIPC(page: Page, legacy = false, firstRun = false) {
+  await page.addInitScript(({ legacy, firstRun }) => {
     const commands: string[] = []
-    let unlocked = false
+    let unlocked = firstRun && localStorage.getItem('__testSetupSkipped') === '1'
     ;(window as any).__vaultTestCommands = commands
     ;(window as any).__TAURI_INTERNALS__ = {
       async invoke(command: string, args: any = {}) {
         commands.push(command)
         if (command === 'vault_status')
-          return { configured: !legacy, unlocked, legacy }
+          return { configured: !legacy && !firstRun, unlocked, legacy: legacy && !unlocked }
+        if (command === 'vault_skip') {
+          if (!legacy && !firstRun) throw new Error('已加密数据不允许跳过')
+          localStorage.setItem('__testSetupSkipped', '1')
+          unlocked = true
+          return
+        }
         if (command === 'vault_unlock') {
           if (args.password === 'wrong')
             throw { code: 'vault_password', message: '口令错误，请重试' }
@@ -25,7 +31,7 @@ async function installLockedIPC(page: Page, legacy = false) {
         throw new Error(`Unexpected test IPC: ${command}`)
       },
     }
-  }, { legacy })
+  }, { legacy, firstRun })
 }
 
 test('locked startup blocks business requests and clears failed password submissions', async ({ page }) => {
@@ -60,4 +66,20 @@ test('legacy setup fits the minimum window and explains migration and lost-passw
   expect(box.y + box.height).toBeLessThanOrEqual(620)
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
   await page.screenshot({ path: 'test-results/vault-setup-940.png', fullPage: true })
+})
+
+test('first launch can skip encryption and subsequent launches enter directly', async ({ page }) => {
+  await installLockedIPC(page, false, true)
+  await page.setViewportSize({ width: 940, height: 620 })
+  await page.goto('/')
+  const skip = page.getByRole('button', { name: '暂不加密，直接进入' })
+  await expect(skip).toBeVisible()
+  await skip.click()
+  await expect(page.getByRole('heading', { name: '全部事项', exact: true, level: 1 })).toBeVisible()
+  expect(await page.evaluate(() => (window as any).__vaultTestCommands)).toContain('vault_skip')
+  await page.reload()
+  await expect(page.getByRole('heading', { name: '全部事项', exact: true, level: 1 })).toBeVisible()
+  expect(await page.evaluate(() => (window as any).__vaultTestCommands)).not.toContain('vault_skip')
+  expect(await page.evaluate(() => (window as any).__vaultTestCommands)).not.toContain('vault_unlock')
+  await page.screenshot({ path: 'test-results/vault-skipped-940.png', fullPage: true })
 })
