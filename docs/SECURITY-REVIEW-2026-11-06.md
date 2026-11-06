@@ -1,0 +1,71 @@
+# ShiftNote 安全审查记录（2026-11-06）
+
+最初源码审查未发现后门、隐蔽上传、远程控制、读取浏览器凭据或注册自启动的逻辑。以下 1–6 节保留修复前的审查证据；0.2.0 已处理恢复边界、旧 SQLite 和本地静态加密问题，修复结果见末尾第 7 节。
+
+**1. 范围与结论边界**
+
+- 审查对象：仓库基线 `409b58ffa4c8bb39818c7b90e68aebcdd889667a` 加当前未提交的实现及启动修复；覆盖生产 Rust/Vue 源码、Tauri 配置和权限、npm/Cargo 锁文件、构建脚本和 CI。
+- 已核对交付文件 `release/ShiftNote-0.1.0-windows-x64/shiftnote.exe`，SHA256 为 `de8dbbaf9363eaeaaf1c18c925db7dca9c8201e2ebda5589369279cc6cdb33e8`，与本机 Release 构建输出一致。哈希用于标识本次产物，不能单独证明文件可信。
+- 本次以静态检查和依赖公告核对为主，没有完整二进制逆向、运行期网络抓包或模糊测试，也没有逐行审计所有第三方依赖。“未发现后门”不是无漏洞认证。
+- 本次未修改产品代码、依赖或 Windows 安全策略，没有操作当前运行中的应用及其用户数据。
+
+**2. 需要优先处理的问题**
+
+| 问题 | 触发条件及影响 | 证据与建议 |
+| --- | --- | --- |
+| 恢复校验未拒绝额外触发器等数据库对象 | 用户主动恢复别人提供的不可信 `.db`。额外触发器会随整库复制保留，可能在后续合法写入时改写、删除业务数据。这是静态确认的校验缺口，尚未动态复现；未证明远程代码执行。 | `src-tauri/src/db/mod.rs:349` 检查完整性和必要表；`:438` 只核对基准表所需的列、外键和索引；`:235`、`:246` 整库复制保留源库 schema。建议拒绝意外触发器、视图、虚拟表及不兼容结构，或将经过验证的数据导入全新基准库，避免直接继承外部 schema。 |
+| Windows 成品内置 SQLite 3.46.0，落后于已公开安全修复 | 本应用会打开、检查并查询用户选择的数据库，存在处理不可信数据库的入口。具体漏洞仍取决于恶意 SQL、数据库内容和功能是否可达，不能只凭版本认定已经可利用。 | `src-tauri/Cargo.toml:21` 使用 bundled rusqlite；`Cargo.lock:1746` 锁定 libsqlite3-sys 0.30.1；本机该依赖的 sqlite3.c 定义版本为 3.46.0，构建启用 FTS5。建议升级到包含当前安全修复的受维护版本，再验证迁移与备份兼容性。该依赖配置沿用克隆时的版本。 |
+| 恢复过程缺少明确的资源预算 | 不可信的大备份或大量快照 JSON 可能导致长时间占用数据库锁、内存或磁盘。未运行资源耗尽测试。 | `src-tauri/src/db/mod.rs:496` 起整批读取并解析交接单快照；`src-tauri/src/db/handovers.rs:151` 也有整批读取。建议设置文件、记录数、单条快照字节数和执行时间限制。 |
+
+SQLite 官方列出的修复包括 CVE-2025-7709（损坏 FTS5 数据库，3.50.3 修复），以及 CVE-2026-11822/11824（任意 SQL、FTS5、DEFENSIVE 未启用等前提，3.53.2 修复）。这些公告说明需要升级和控制不可信输入，不能替代本应用的可达性验证。[SQLite 官方漏洞说明](https://sqlite.org/cves.html)
+
+当前连接初始化设置了外键、WAL 和 busy timeout，未看到显式启用 DEFENSIVE、关闭 trusted_schema 或设置上述资源预算。它们可作为补充防护；单独关闭 trusted_schema 不能代替清理额外触发器。
+
+**3. 本地数据与隐私边界**
+
+- 正式数据库、数据库备份、Markdown/TXT 导出均未做应用层加密。能读取这些文件的本机用户或进程可以看到记录；便携版旁边的 `data` 目录复制后也可读取。依据为普通 `Connection::open` 和当前导出实现，未使用 SQLCipher 或其他内容加密。不要将账号密码、密钥等直接写进交接记录；若需保护敏感内容，应另行设计加密和密钥管理。
+- 未发现业务代码将交接记录上传到服务器。不过 WebView2 运行时具有微软诊断与崩溃报告机制，因此不能把业务代码“本地存储”理解为整个进程永不联网。本次没有抓包，不能判断本机实际发送了哪些诊断数据。[微软 WebView2 隐私说明](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/data-privacy)
+- 当前 EXE 没有受信任的代码签名。SmartScreen 提示与发布者及文件信誉有关，不能单凭该提示认定有后门；签名也不替代源码和供应链审查。[微软 SmartScreen 说明](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/smartscreen-reputation)
+
+**4. 依赖与构建链检查**
+
+- 实际执行 `npm audit --json --ignore-scripts`：5 个中危依赖节点、0 高危、0 严重；对应 2 项公告沿依赖链传播，并非 5 个独立漏洞。链路为测试依赖 `@vue/test-utils -> js-beautify -> glob / editorconfig -> minimatch`。当前未发现项目使用受影响的 glob 取消遍历或不可信模式处理路径，也未发现这条测试依赖链进入 Windows 应用的生产前端。
+- `npm audit --omit=dev --json --ignore-scripts`：0 项告警。这个结果只覆盖 npm 公告匹配，不覆盖 Rust 或内嵌 SQLite C 代码。
+- glob 公告描述取消后仍继续遍历，修复版本为 14.0.2；minimatch 公告描述特定优化配置下的模式放大，修复版本为 11.0.1。应调整测试依赖链并重新核对，而不是将版本命中直接报告为成品可被攻击。[glob 官方公告](https://github.com/isaacs/node-glob/security/advisories/GHSA-3g3m-2fjr-6pw4)、[minimatch 官方公告](https://github.com/isaacs/minimatch/security/advisories/GHSA-g3hv-75wg-m249)
+- Cargo 锁文件依赖经 OSV 版本核对，命中 glib 0.18.5 的 VariantStrIter 问题，以及 proc-macro-error 1.0.4 停止维护提示。二者位于 Linux GTK 依赖链，未进入本次 Windows 目标；停止维护提示也不等于已证实漏洞。未安装 cargo-audit，本项不是完整 Rust 安全审计。[glib RustSec 公告](https://rustsec.org/advisories/RUSTSEC-2024-0429.html)、[proc-macro-error RustSec 提示](https://rustsec.org/advisories/RUSTSEC-2024-0370.html)
+- 锁文件中的 npm/Cargo 下载来源分别为官方 npm 注册表和 crates.io，未发现自定义 Git 依赖或第三方注册表。根 package.json 未设置 install/postinstall/prepare；依赖中存在 esbuild 等正常安装脚本，不能仅据此排除整个供应链风险。
+- CI 的 Actions 使用版本标签，未固定提交 SHA，也未显式收紧 job 权限；可后续加固。没有发现隐藏发布、上传本机凭据或执行远程脚本的工作流。
+
+**5. 未发现的可疑行为及已有防护**
+
+- 生产业务代码未发现 HTTP 上传、遥测 SDK、远程更新执行、shell 命令执行、注册表自启动、计划任务或浏览器密码读取路径。构建辅助脚本中的 UI 自动化工具没有被应用、安装器或 CI 自动调用。
+- Tauri 仅注册 dialog 插件及业务命令；主窗口 capability 为 `core:default`、`dialog:default`，没有 shell/http 权限或远程来源授权。CSP 限制脚本为 self；正式 CSP 仍保留开发 WebSocket 地址，可进一步收紧。
+- 未发现 Vue `v-html`、innerHTML、eval 等注入入口；交接预览以文本插值显示。SQL 用户值使用参数绑定，动态排序和筛选使用固定片段或白名单，未找到 SQL 注入入口。
+- 导出路径由用户保存操作指定，支持覆盖是预期功能；未找到将此能力暴露给远程攻击者的调用链。导出采用同目录临时文件和原子替换，恢复也有暂存校验、恢复前快照及失败回滚，这些措施保护正常错误场景，但不解决上述不可信 schema 问题。
+
+**6. 当前建议与验证限制**
+
+优先升级 SQLite 并收紧恢复格式；在这两项完成前，只恢复自己生成且来源可确认的备份。随后处理开发依赖告警和资源限制；加密及签名根据实际分发和数据保密需求实施。
+
+构造备份并运行恢复的验证动作被自动安全审查拦截，给出的理由是可能涉及网络安全风险。已停止该动作并仅做只读源码核对；没有写入构造数据库、没有运行验证代码，也没有动态复现触发器或资源耗尽问题。上述对应发现应按静态证据评估。
+
+**7. 0.2.0 修复结果**
+
+| 项目 | 当前行为与验证 |
+| --- | --- |
+| SQLite | rusqlite 0.41.1 / libsqlite3-sys 0.39.1，内置 SQLite 3.54.1；使用 Cargo.lock 锁定。 |
+| 不可信备份 | 对声明的每个历史版本生成真实参考结构，比较全部表/索引及完整 SQL token，拒绝额外对象、触发器、视图、虚拟表、约束或索引改动。预检通过才迁移，迁移后再次验证；全部行检查字段类型与字节限额。 |
+| 资源边界 | 生产镜像与旧文件含日志最多 128 MiB，每表 10 万行/合计 50 万行，单字段/快照 8 MiB，快照合计 64 MiB，选择 JSON 1 MiB、数组 1 万项；每个受限 SQL 阶段 30 秒/1 亿 VM 步，复制也有超时。不是整次操作硬限时 30 秒。 |
+| 连接 | DEFENSIVE 开启、trusted_schema 关闭；生产 SQLite 在内存运行，临时存储与日志也在内存。 |
+| 口令加密 | 首次设置至少 12 个 Unicode 字符，两次一致，旧库需明确迁移确认。Argon2id v1.3（64 MiB、3 次、1 lane）派生 256 位密钥；AES-256-GCM 使用每次随机 96 位 nonce，格式头作为 AAD 认证。密码/密钥不写本地配置或日志，Rust 密码、密钥与 KDF 工作区尽力清零。 |
+| 持久化/恢复 | 只把密文写到同目录临时文件，sync 后原子发布；Windows 在防写租约下使用 ReplaceFileW 完成替换。落盘失败重载上次成功数据；闭包报错不保存局部写入，重载失败清除会话并拒绝业务访问。恢复暂存仅内存，预恢复快照为加密 .snbak。 |
+| 迁移并发 | Windows 源文件防写租约跨最后检查到替换/删除；SHA256、长度、时间和文件身份核对源未变化。非 Windows 的指纹检查不能排除任意不合作写者的最后竞态，不能把本次 Windows 验证推广到其他平台。 |
+| 备份 | 新备份 .snbak 加密，跨安装/电脑恢复支持原备份口令。设置可加密旧明文备份，验证新文件后才删除原件，无效/失败原件保留并显示剩余数量。 |
+| 前端残留 | 解锁前不加载业务数据或主题；输入提交后清空；上次处理人从 localStorage 迁移到加密 settings，写入成功后才移除旧键，新值不再写 localStorage。 |
+| 供应链 | glob/minimatch 使用已修复的精确传递依赖覆盖；完整 npm audit 为 0。升级/新增 Cargo 依赖已用 OSV 做版本核对，未命中公告；未声称整个 Cargo 锁文件所有平台均为 0 告警。CI 固定 Actions SHA、contents:read、关闭 checkout 凭据持久化、Cargo --locked，正式 CSP 去除开发 WebSocket。 |
+
+完整 MSVC Rust 测试 **98/98**、前端单测 **61/61**、Edge 模拟 IPC 浏览器流程 **5/5**、typecheck 和生产构建通过，Windows Release/NSIS 已生成。新增测试使用无害的结构、边界和错误恢复场景，没有运行前述被拦截的破坏性利用验证。原生完整口令流程、安装升级和第二台物理机器仍不在已完成验收范围；本次新版启动尝试未获得窗口，详见 TESTING.md。
+
+交付源码提交为 `56c8bd3`（其后的提交仅更新文档）。`release/ShiftNote-0.2.0-windows-x64/` 中 EXE 的 SHA-256 为 `4bcb51d5f8f12ab99f59e4b68508d852dafba98c07e7e55d00c87748825efbb5`，NSIS 安装包为 `44dadf536ee241296560ab2c1e4cc27ba0161b3fc14cfcbb069e7dd656420bae`；已核对与编译输出一致。便携 ZIP 中只有程序、便携标记、构建说明和对应校验文件，不包含测试或用户数据。
+
+静态加密不保护解锁后的进程内存、系统分页或崩溃转储；删除旧明文文件也不等于物理擦除 SSD、系统备份或云同步历史。Markdown/TXT 为用户主动选择的明文分享格式，界面及保存对话框已明确提示。WebView2 诊断边界已补充到设置和文档，未关闭系统安全功能。当前没有受信任签名证书，0.2.0 仍未签名；签名工作需要后续具备证书或签名服务后完成。
