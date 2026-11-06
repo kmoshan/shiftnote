@@ -7,12 +7,12 @@
 | 验证 | 结果 | 验证范围 |
 | --- | --- | --- |
 | 锁文件安装 `npm ci --no-audit --no-fund` | 通过，167 包 | 使用官方 SHA256 核验的隔离 Node 24.15.0，不修改全局 Node |
-| `npm test` | 61 项通过 | Pinia 请求乱序、草稿、分页、批量、解锁门禁、旧备份入口、处理人迁移和真实 Vue 组件交互；IPC 为测试替身 |
+| `npm test` | 65 项通过 | Pinia 请求乱序、草稿、分页、批量、解锁门禁、首次跳过、设置启用加密、旧备份入口、处理人迁移和真实 Vue 组件交互；IPC 为测试替身 |
 | `npm run typecheck` / `npm run build` | 通过 | 前端类型与生产构建 |
-| Playwright | 5 项通过 | Node 24.15.0 + 本机 Edge，真实页面与路由；IPC 为测试替身；TEMP 重定向到工作区 |
-| 完整 MSVC Rust 测试 | 98 项通过 | `cargo test --locked --manifest-path src-tauri/Cargo.toml`；真实 SQLite、隔离文件、加密重开、跨口令备份、错误回滚、WAL 迁移、防写租约和恢复边界 |
+| Playwright | 6 项通过 | Node 24.15.0 + 本机 Edge，真实页面与路由；包含跳过后刷新直接进入，IPC 为测试替身；TEMP 重定向到工作区 |
+| 完整 MSVC Rust 测试 | 104 项通过 | `cargo test --locked --manifest-path src-tauri/Cargo.toml`；真实 SQLite、隔离文件、跳过重启、明文备份/恢复、设置启用加密、跨口令备份、错误回滚、WAL 迁移、防写租约和恢复边界 |
 | 完整 Tauri Release 编译 | 通过 | `npm run app:build`；Windows x64 程序、Tauri 命令宏与注册入口均已编译 |
-| NSIS 打包 | 通过 | `ShiftNote_0.2.0_x64-setup.exe`；最终文件校验值见本地产物 `SHA256SUMS.txt` |
+| NSIS 打包 | 通过 | `ShiftNote_0.2.1_x64-setup.exe`；最终文件校验值见本地产物 `SHA256SUMS.txt` |
 | 交付文件检查 | 通过 | EXE/安装包与编译输出 SHA-256 一致；便携 ZIP 仅含 EXE、便携标记、构建说明和校验文件，不含数据目录 |
 | npm 安全公告 | 0 告警 | `npm audit --ignore-scripts`，包含开发依赖；不是对所有第三方源码的安全认证 |
 | 原生窗口基本流程（上一轮 0.1 本地版） | 通过 | 曾在隔离目录加载 WebView2，经真实 IPC 新增、关闭重启保留；该记录不能替代本次口令解锁的原生端到端验收 |
@@ -44,9 +44,11 @@ npm run test:e2e
 
 浏览器套件自启 Vite，不会修改生产代码的运行时检测；测试 IPC 替身仅在 `tests/e2e/workflows.spec.ts` 注入。截图和失败 trace 位于忽略的 `test-results/`。
 
-此前缺少 MSVC 时曾用隔离 harness 验证 67 项业务测试；安装工具链后 0.1 本地实现通过 73 项。当前 0.2.0 已使用 VS 2022 Build Tools 和 Windows SDK 运行完整 Tauri crate 的 98 项 Rust 测试，全部通过。
+此前缺少 MSVC 时曾用隔离 harness 验证 67 项业务测试；安装工具链后 0.1 本地实现通过 73 项，0.2.0 通过 98 项。当前 0.2.1 已使用 VS 2022 Build Tools 和 Windows SDK 运行完整 Tauri crate 的 104 项 Rust 测试，全部通过。
 
-本地产物整理在 `release/ShiftNote-0.2.0-windows-x64/`：`shiftnote.exe`、便携标记 `shiftnote.portable`、NSIS 安装包及 `SHA256SUMS.txt`。目录已在 Git 中忽略，未发布远端版本。生成命令为 `npm run app:build -- -- --locked`（最后的 `--locked` 传给 Cargo）。
+本地产物整理在 `release/ShiftNote-0.2.1-windows-x64/`：`shiftnote.exe`、便携标记 `shiftnote.portable`、NSIS 安装包及 `SHA256SUMS.txt`。目录已在 Git 中忽略，未发布远端版本。生成命令为 `npm run app:build -- -- --locked`（最后的 `--locked` 传给 Cargo）。
+
+0.2.1 增加真实文件回归：首次跳过后明文重开、失败写入回滚、旧库跳过迁移、设置启用加密保留事项、加密发布失败保持普通模式、已加密文件禁止跳过、明文模式恢复加密备份须原口令且不改变模式。Windows 原子替换对保留原文件名的短暂共享冲突最多重试约 500 ms；实际读句柄释放后发布成功，持续占用时原文件保留。其他错误不放宽权限或共享规则。
 
 新增安全回归覆盖完整历史 schema 白名单、额外对象/约束/索引拒绝、全部行字段类型检查、文件/记录/字段/快照/SQL 预算、旧版备份源不改动、口令校验与随机 nonce、篡改拒绝、单实例锁、加密备份原口令、恢复前加密快照、保存失败内存回滚、错误闭包不落盘、无法重载时锁定，以及 Windows 源租约与源变更拒绝。没有构造或运行破坏性利用载荷；跨电脑备份用本机两个独立目录和口令模拟，不是第二台物理机器测试。
 
@@ -89,10 +91,10 @@ $env:SHIFTNOTE_DATA_DIR = Join-Path $env:TEMP 'shiftnote-acceptance'
 npm run app:dev
 ```
 
-- [x] 完整 MSVC `cargo test`：98 项通过。
+- [x] 完整 MSVC `cargo test`：104 项通过。
 - [x] 上一轮 0.1 本地版原生窗口启动和真实 IPC 新增事项写入隔离数据库。
 - [x] 上一轮 0.1 本地版无数据环境变量、不同工作目录、包含空格的便携路径；新增事项关闭重开后保留。
-- [ ] 0.2.0 原生窗口手工设置口令、解锁、重启及备份恢复全流程（核心存储已有真实 Rust 自动回归，UI 已有模拟 IPC 浏览器回归）。
+- [ ] 0.2.1 原生窗口手工跳过、设置启用口令、解锁、重启及备份恢复全流程（核心存储已有真实 Rust 自动回归，UI 已有模拟 IPC 浏览器回归）。
 - [ ] 1,001 条事项在原生窗口逐页访问，最后一条删除后页码有效，计数与真实数据库一致。
 - [ ] 快速切换 20 次、跨事项草稿、旧进展编辑、今日和日期区间在原生 WebView2 中一致。
 - [ ] 混合状态批量、失败选择保留、归档/取消归档和手动顺序重启后保持。
