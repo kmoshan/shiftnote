@@ -81,3 +81,11 @@ Windows 文件替换对 32/33/1175 这类保留原文件名的短暂占用错误
 当前回归为 Rust 104 项、前端 65 项、模拟 IPC 浏览器 6 项。正式签名仍未配置，不能把本次功能调整理解为已消除 SmartScreen 提示；新签名文件也可能需要建立信誉。[微软发布者说明](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/smartscreen-reputation)
 
 0.2.1 已完成 Windows Release/NSIS 编译，源码提交 `6fb4583`。EXE SHA-256 为 `394294d44d8e6b319a1614146a7f4edeae63b606141e2684af4be9765944ed5e`，安装包为 `f43a190188b1271be0dc7a4d178f0685807f1e59e1cac9eb2243f81cbd3c7623`。已核对编译输出、本地产物和便携 ZIP 内文件的对应校验值，未包含用户或测试数据。原生完整交互、安装升级和第二台物理机器验收仍待完成。
+
+**9. 合入上游版本检测后的边界**
+
+上游 `2d67e1f` 新增 Rust HTTP 读取 GitHub Releases、Windows 系统代理读取与默认浏览器打开能力，因此前面的“未发现业务 HTTP 路径/仅注册 dialog”属于历史审查，不能应用于合并后的版本。当前只在解锁或跳过后自动检测，并可手动检查；不发送事项、口令或备份，不自动下载或安装。
+
+本次兼容补充 API HTTPS/同主机重定向、响应和说明限额、项目 Release 链接白名单，并将 opener 从默认广泛权限改为只允许项目 Releases 页面。保留正式 CSP 和本地加密/恢复保护。详细影响与验证见 [上游兼容检查](UPSTREAM-UPDATE-COMPAT-2026-11-06.md)。
+
+新增 83 个 Cargo 包经 OSV 核对，命中 zvariant / zbus_names / zvariant_derive 的 3 条 INFO 停止独立维护提示（RUSTSEC-2026-0370/0371/0372），来自 opener 的 Linux zbus 5 链路；Windows 目标依赖树不包含它们。公告说明独立 crate 已并入 zbus 6，未提供旧 crate 修复版本，后续应跟随上游迁移。本次 npm 全量审计仍为 0；这不代表全平台 Cargo 零风险。当前回归更新为 Rust 112 项、Vue 71 项、模拟 IPC 浏览器 7 项，以及单独执行的真实联网检查 1 项；Windows Release/NSIS 重新编译成功。

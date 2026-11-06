@@ -261,3 +261,15 @@ export interface HandoverExportResult {
   path: string
   bytes: number
 }
+
+export interface UpdateInfo {
+  currentVersion: string
+  latestVersion: string | null
+  hasUpdate: boolean
+  releaseName: string | null
+  releaseUrl: string | null
+  publishedAt: string | null
+  notes: string | null
+  checkedAt: number
+  usedProxy: boolean
+}

@@ -76,6 +76,7 @@ it('keeps business views, data loading and creation shortcuts behind the unlock 
   const tasks = useTaskStore()
   const loadTheme = vi.spyOn(ui, 'loadTheme').mockResolvedValue()
   const bootstrap = vi.spyOn(tasks, 'bootstrap').mockResolvedValue()
+  const checkUpdates = vi.spyOn(ui, 'autoCheckForUpdates').mockResolvedValue()
   const router = createRouter({
     history: createMemoryHistory(),
     routes: [
@@ -101,6 +102,7 @@ it('keeps business views, data loading and creation shortcuts behind the unlock 
   expect(wrapper.text()).not.toContain('机密事项列表')
   expect(loadTheme).not.toHaveBeenCalled()
   expect(bootstrap).not.toHaveBeenCalled()
+  expect(checkUpdates).not.toHaveBeenCalled()
   window.dispatchEvent(new KeyboardEvent('keydown', { key: 'n', ctrlKey: true }))
   expect(ui.editorOpen).toBe(false)
 
@@ -109,6 +111,7 @@ it('keeps business views, data loading and creation shortcuts behind the unlock 
   await flushPromises()
   expect(loadTheme).toHaveBeenCalledOnce()
   expect(bootstrap).toHaveBeenCalledOnce()
+  expect(checkUpdates).toHaveBeenCalledOnce()
   expect(wrapper.text()).toContain('机密事项列表')
 })
 

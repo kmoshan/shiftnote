@@ -25,6 +25,7 @@ import type {
   HandoverFormat,
   HandoverExportResult,
   VaultStatus,
+  UpdateInfo,
 } from '@/types'
 
 /** 统一的调用失败对象：后端 AppError 会被序列化为 { code, message }。 */
@@ -93,6 +94,7 @@ export const api = {
     migrateLegacy = false
   ) => call<void>('vault_unlock', { password, confirmPassword, migrateLegacy }),
   vaultSkip: () => call<void>('vault_skip'),
+  checkUpdate: () => call<UpdateInfo>('check_update'),
   vaultEnableEncryption: (password: string, confirmPassword: string) =>
     call<void>('vault_enable_encryption', { password, confirmPassword }),
   appInfo: () => call<AppInfo>('app_info'),

@@ -9,4 +9,5 @@ pub mod batch;
 pub mod handovers;
 pub mod settings;
 pub mod tasks;
+pub mod update;
 pub mod vault;

@@ -9,6 +9,7 @@ import TaskEditor from '@/components/TaskEditor.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import ToastHost from '@/components/ToastHost.vue'
 import VaultUnlock from '@/components/VaultUnlock.vue'
+import UpdateBanner from '@/components/UpdateBanner.vue'
 import { isTauriRuntime } from '@/services/api'
 import { useTaskStore } from '@/stores/tasks'
 import { useUiStore } from '@/stores/ui'
@@ -46,6 +47,7 @@ function handleKeydown(event: KeyboardEvent) {
 async function loadWorkspace() {
   await ui.loadTheme()
   await tasks.bootstrap()
+  void ui.autoCheckForUpdates()
 }
 
 watch(
@@ -98,6 +100,7 @@ onUnmounted(() => {
 
     <div class="flex min-w-0 flex-1 flex-col">
       <AppTopbar />
+      <UpdateBanner />
       <div class="flex min-h-0 flex-1">
         <router-view class="min-w-0 flex-1" />
         <TaskDetail v-if="tasks.selectedId && route.meta.view" />

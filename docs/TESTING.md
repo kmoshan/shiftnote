@@ -1,24 +1,26 @@
 # ShiftNote 测试与验收
 
-更新：2026-11-06（Asia/Tokyo）。基线 `409b58f`，按根目录项目审查与分工计划实施。
+更新：2026-11-06（Asia/Tokyo）。原实施基线 `409b58f`；现已合入上游 `2d67e1f` 的版本检测功能，并完成与本地 0.2.1 的兼容回归。影响和网络边界见 [上游兼容检查](UPSTREAM-UPDATE-COMPAT-2026-11-06.md)。
 
 ## 本轮结果与边界
 
 | 验证 | 结果 | 验证范围 |
 | --- | --- | --- |
-| 锁文件安装 `npm ci --no-audit --no-fund` | 通过，167 包 | 使用官方 SHA256 核验的隔离 Node 24.15.0，不修改全局 Node |
-| `npm test` | 65 项通过 | Pinia 请求乱序、草稿、分页、批量、解锁门禁、首次跳过、设置启用加密、旧备份入口、处理人迁移和真实 Vue 组件交互；IPC 为测试替身 |
+| 锁文件安装 `npm ci --no-audit --no-fund` | 通过，168 包 | 使用官方 SHA256 核验的隔离 Node 24.15.0，不修改全局 Node；缓存位于工作区 |
+| `npm test` | 71 项通过 | Pinia 请求乱序、草稿、分页、批量、解锁门禁、首次跳过、设置启用加密、旧备份入口、处理人迁移、更新缓存/失败重试/链接范围和真实 Vue 组件交互；IPC 为测试替身 |
 | `npm run typecheck` / `npm run build` | 通过 | 前端类型与生产构建 |
-| Playwright | 6 项通过 | Node 24.15.0 + 本机 Edge，真实页面与路由；包含跳过后刷新直接进入，IPC 为测试替身；TEMP 重定向到工作区 |
-| 完整 MSVC Rust 测试 | 104 项通过 | `cargo test --locked --manifest-path src-tauri/Cargo.toml`；真实 SQLite、隔离文件、跳过重启、明文备份/恢复、设置启用加密、跨口令备份、错误回滚、WAL 迁移、防写租约和恢复边界 |
+| Playwright | 7 项通过 | Node 24.15.0 + 本机 Edge，真实页面与路由；包含跳过后刷新直接进入、解锁后检查更新/打开页面命令/设置页手动检查，IPC 为测试替身；TEMP 重定向到工作区 |
+| 完整 MSVC Rust 测试 | 112 项通过，1 项联网测试默认忽略 | `cargo test --locked --manifest-path src-tauri/Cargo.toml`；真实 SQLite、隔离文件、跳过重启、明文备份/恢复、设置启用加密、跨口令备份、错误回滚、WAL 迁移、防写租约、恢复边界和更新解析/URL/说明限额 |
+| GitHub 公开版本真实联网 | 1 项通过 | 手工执行 `release_endpoint_smoke -- --ignored --nocapture`；Rust HTTP 读到 current=0.2.1 / latest=0.2.0 / has_update=false / used_proxy=false，不是模拟返回 |
 | 完整 Tauri Release 编译 | 通过 | `npm run app:build`；Windows x64 程序、Tauri 命令宏与注册入口均已编译 |
-| NSIS 打包 | 通过 | `ShiftNote_0.2.1_x64-setup.exe`；最终文件校验值见本地产物 `SHA256SUMS.txt` |
+| NSIS 打包 | 通过 | 合入更新功能后重新生成 `ShiftNote_0.2.1_x64-setup.exe`；最终文件校验值见本地产物 `SHA256SUMS.txt` |
 | 交付文件检查 | 通过 | EXE/安装包与编译输出 SHA-256 一致；便携 ZIP 仅含 EXE、便携标记、构建说明和校验文件，不含数据目录 |
 | npm 安全公告 | 0 告警 | `npm audit --ignore-scripts`，包含开发依赖；不是对所有第三方源码的安全认证 |
+| 新增 Cargo 依赖公告 | 83 个新增包已核对 | 3 条 Linux D-Bus 组件停止独立维护的 INFO 提示；Windows 目标依赖树不包含这 3 个包，详见兼容检查。未声称全平台 Cargo 零告警 |
 | 原生窗口基本流程（上一轮 0.1 本地版） | 通过 | 曾在隔离目录加载 WebView2，经真实 IPC 新增、关闭重启保留；该记录不能替代本次口令解锁的原生端到端验收 |
 | 完整原生交互 / 安装升级 | 待验证 | 完整交接、对话框、安装与升级仍需桌面验收 |
 
-所有新增前端测试、后端模块内测试和浏览器流程已接入 `.github/workflows/ci.yml`。本轮未推送或触发远端 CI，因此不能把 CI 配置存在当成该提交的远端检查通过。
+所有新增前端测试、后端模块内测试和浏览器流程已接入 `.github/workflows/ci.yml`。上表记录本地执行结果；远端 CI 状态以 PR 的检查页面为准，不能把 CI 配置存在当成远端检查通过。
 
 ## 常规执行
 
@@ -42,11 +44,11 @@ $env:PLAYWRIGHT_BROWSER_CHANNEL = 'msedge'
 npm run test:e2e
 ```
 
-浏览器套件自启 Vite，不会修改生产代码的运行时检测；测试 IPC 替身仅在 `tests/e2e/workflows.spec.ts` 注入。截图和失败 trace 位于忽略的 `test-results/`。
+浏览器套件自启 Vite，不会修改生产代码的运行时检测；测试 IPC 替身仅在 `tests/e2e/` 注入。截图和失败 trace 位于忽略的 `test-results/`。
 
-此前缺少 MSVC 时曾用隔离 harness 验证 67 项业务测试；安装工具链后 0.1 本地实现通过 73 项，0.2.0 通过 98 项。当前 0.2.1 已使用 VS 2022 Build Tools 和 Windows SDK 运行完整 Tauri crate 的 104 项 Rust 测试，全部通过。
+此前缺少 MSVC 时曾用隔离 harness 验证 67 项业务测试；安装工具链后 0.1 本地实现通过 73 项，0.2.0 通过 98 项，可选口令版 0.2.1 通过 104 项。当前合入版本检测后已使用 VS 2022 Build Tools 和 Windows SDK 运行完整 Tauri crate 的 112 项 Rust 测试，全部通过；另行执行默认忽略的联网测试也通过。
 
-本地产物整理在 `release/ShiftNote-0.2.1-windows-x64/`：`shiftnote.exe`、便携标记 `shiftnote.portable`、NSIS 安装包及 `SHA256SUMS.txt`。目录已在 Git 中忽略，未发布远端版本。生成命令为 `npm run app:build -- -- --locked`（最后的 `--locked` 传给 Cargo）。
+合入更新功能后的本地产物整理在 `release/ShiftNote-0.2.1-update-compat-windows-x64/`：`shiftnote.exe`、便携标记 `shiftnote.portable`、NSIS 安装包及 `SHA256SUMS.txt`。原 `release/ShiftNote-0.2.1-windows-x64/` 保留的是合入前产物，不能用其旧校验值标识新版本。目录已在 Git 中忽略，未发布远端版本。生成命令为 `npm run app:build -- -- --locked`（最后的 `--locked` 传给 Cargo）。
 
 0.2.1 增加真实文件回归：首次跳过后明文重开、失败写入回滚、旧库跳过迁移、设置启用加密保留事项、加密发布失败保持普通模式、已加密文件禁止跳过、明文模式恢复加密备份须原口令且不改变模式。Windows 原子替换对保留原文件名的短暂共享冲突最多重试约 500 ms；实际读句柄释放后发布成功，持续占用时原文件保留。其他错误不放宽权限或共享规则。
 
@@ -91,7 +93,7 @@ $env:SHIFTNOTE_DATA_DIR = Join-Path $env:TEMP 'shiftnote-acceptance'
 npm run app:dev
 ```
 
-- [x] 完整 MSVC `cargo test`：104 项通过。
+- [x] 完整 MSVC `cargo test`：112 项通过；公开版本联网测试另行通过。
 - [x] 上一轮 0.1 本地版原生窗口启动和真实 IPC 新增事项写入隔离数据库。
 - [x] 上一轮 0.1 本地版无数据环境变量、不同工作目录、包含空格的便携路径；新增事项关闭重开后保留。
 - [ ] 0.2.1 原生窗口手工跳过、设置启用口令、解锁、重启及备份恢复全流程（核心存储已有真实 Rust 自动回归，UI 已有模拟 IPC 浏览器回归）。

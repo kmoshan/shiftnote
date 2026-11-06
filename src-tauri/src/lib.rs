@@ -99,6 +99,7 @@ pub fn run() {
 
     let result = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(move |app| {
             if let Err(error) = initialize_app(app, &windows) {
                 let data_dir = resolve_data_directories(app.handle())
@@ -119,6 +120,7 @@ pub fn run() {
             commands::vault::vault_unlock,
             commands::vault::vault_skip,
             commands::vault::vault_enable_encryption,
+            commands::update::check_update,
             commands::settings::settings_get,
             commands::settings::settings_all,
             commands::settings::settings_set,
