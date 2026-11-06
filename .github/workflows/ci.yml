@@ -22,7 +22,7 @@ jobs:
       - name: 安装 Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 22
+          node-version: 22 # Minimum supported Node 22 release: 22.22.2
           cache: npm
 
       - name: 安装前端依赖
@@ -31,9 +31,18 @@ jobs:
       - name: 类型检查
         run: npm run typecheck
 
+      - name: 前端业务回归
+        run: npm test
+
       # Tauri 的 generate_context! 需要前端产物目录存在
       - name: 构建前端
         run: npm run build
+
+      - name: 安装浏览器测试运行时
+        run: npx --no-install playwright install chromium
+
+      - name: 浏览器交互回归（模拟 IPC）
+        run: npm run test:e2e
 
       - name: 安装 Rust
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable

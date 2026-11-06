@@ -14,16 +14,30 @@ const props = defineProps<{
 
 const tasks = useTaskStore()
 
-const AUTHOR_KEY = 'shiftnote:last-author'
-
-const draft = ref('')
-const author = ref(localStorage.getItem(AUTHOR_KEY) ?? '')
-const saving = ref(false)
+const state = computed(() => tasks.getProgressDraft(props.taskId))
+const draft = computed({
+  get: () => state.value.content,
+  set: (value) => {
+    state.value.content = value
+  },
+})
+const author = computed({
+  get: () => state.value.author,
+  set: (value) => {
+    tasks.setProgressAuthor(props.taskId, value)
+  },
+})
+const saving = computed(() => state.value.saving)
 const composerRef = ref<HTMLTextAreaElement | null>(null)
 
-const editingId = ref<string | null>(null)
-const editingText = ref('')
-const editingSaving = ref(false)
+const editingId = computed(() => state.value.editingId)
+const editingText = computed({
+  get: () => state.value.editingText,
+  set: (value) => {
+    state.value.editingText = value
+  },
+})
+const editingSaving = computed(() => state.value.editingSaving)
 
 const newestFirst = ref(true)
 const ordered = computed(() =>
@@ -32,42 +46,62 @@ const ordered = computed(() =>
 
 async function submit() {
   const content = draft.value.trim()
-  if (!content || saving.value || props.disabled) return
-
-  saving.value = true
-  const created = await tasks.addProgress(props.taskId, content, author.value.trim() || null)
-  saving.value = false
+  if (!content || saving.value || props.disabled || tasks.batchBusy) return
+  const taskId = props.taskId
+  const captured = state.value
+  const original = captured.content
+  const submittedAuthor = captured.author.trim()
+  captured.saving = true
+  const created = await tasks.addProgress(
+    taskId,
+    content,
+    submittedAuthor || null
+  )
+  captured.saving = false
 
   if (created) {
-    draft.value = ''
-    localStorage.setItem(AUTHOR_KEY, author.value.trim())
+    if (captured.content === original) captured.content = ''
     await nextTick()
-    composerRef.value?.focus()
+    if (props.taskId === taskId) composerRef.value?.focus()
   }
 }
 
 function startEdit(item: TaskUpdate) {
-  editingId.value = item.id
-  editingText.value = item.content
+  if (props.disabled || state.value.editingSaving || tasks.batchBusy) return
+  state.value.editingId = item.id
+  state.value.editingText = item.content
   void nextTick(() => {
-    const element = document.getElementById(`update-editor-${item.id}`) as HTMLTextAreaElement | null
+    const element = document.getElementById(
+      `update-editor-${item.id}`
+    ) as HTMLTextAreaElement | null
     element?.focus()
     element?.setSelectionRange(element.value.length, element.value.length)
   })
 }
 
 function cancelEdit() {
-  editingId.value = null
-  editingText.value = ''
+  state.value.editingId = null
+  state.value.editingText = ''
 }
 
 async function saveEdit(item: TaskUpdate) {
   const content = editingText.value.trim()
-  if (!content || editingSaving.value) return
-  editingSaving.value = true
-  const updated = await tasks.editProgress(props.taskId, item.id, content)
-  editingSaving.value = false
-  if (updated) cancelEdit()
+  if (!content || editingSaving.value || props.disabled || tasks.batchBusy)
+    return
+  const taskId = props.taskId
+  const captured = state.value
+  const original = captured.editingText
+  captured.editingSaving = true
+  const updated = await tasks.editProgress(taskId, item.id, content)
+  captured.editingSaving = false
+  if (
+    updated &&
+    captured.editingId === item.id &&
+    captured.editingText === original
+  ) {
+    captured.editingId = null
+    captured.editingText = ''
+  }
 }
 </script>
 
@@ -76,7 +110,9 @@ async function saveEdit(item: TaskUpdate) {
     <div class="flex items-center gap-2 px-4">
       <h3 class="text-[11px] font-semibold uppercase tracking-wide text-ink-3">
         处理进展
-        <span class="ml-1 font-normal normal-case tabular-nums">{{ updates.length }} 条</span>
+        <span class="ml-1 font-normal normal-case tabular-nums"
+          >{{ updates.length }} 条</span
+        >
       </h3>
       <button
         type="button"
@@ -112,7 +148,7 @@ async function saveEdit(item: TaskUpdate) {
           <button
             type="button"
             class="btn btn-primary ml-auto h-7"
-            :disabled="!draft.trim() || saving"
+            :disabled="!draft.trim() || saving || tasks.batchBusy"
             @click="submit"
           >
             <Send :size="12" />
@@ -123,12 +159,22 @@ async function saveEdit(item: TaskUpdate) {
     </div>
 
     <!-- 时间线 -->
-    <div v-if="ordered.length === 0" class="mt-3 px-4 pb-2 text-[11.5px] leading-relaxed text-ink-3">
+    <div
+      v-if="ordered.length === 0"
+      class="mt-3 px-4 pb-2 text-[11.5px] leading-relaxed text-ink-3"
+    >
       还没有进展记录。每次交接前追加一条进展，就能形成完整的处理历史。
     </div>
 
-    <ol v-else class="relative mt-3 ml-[18px] border-l border-line pb-1 pl-4 pr-4">
-      <li v-for="(item, index) in ordered" :key="item.id" class="group relative pb-3.5 last:pb-1">
+    <ol
+      v-else
+      class="relative mt-3 ml-[18px] border-l border-line pb-1 pl-4 pr-4"
+    >
+      <li
+        v-for="(item, index) in ordered"
+        :key="item.id"
+        class="group relative pb-3.5 last:pb-1"
+      >
         <span
           class="absolute -left-[19.5px] top-[4px] h-[7px] w-[7px] rounded-full ring-2 ring-panel"
           :class="index === 0 && newestFirst ? 'bg-accent' : 'bg-line-strong'"
@@ -154,14 +200,23 @@ async function saveEdit(item: TaskUpdate) {
             @keydown.esc.prevent="cancelEdit"
           />
           <div class="mt-1 flex justify-end gap-1.5">
-            <button type="button" class="btn h-6 px-2 text-[11px]" @click="cancelEdit">
+            <button
+              type="button"
+              class="btn h-6 px-2 text-[11px]"
+              @click="cancelEdit"
+            >
               <X :size="11" />
               取消
             </button>
             <button
               type="button"
               class="btn btn-primary h-6 px-2 text-[11px]"
-              :disabled="!editingText.trim() || editingSaving"
+              :disabled="
+                !editingText.trim() ||
+                editingSaving ||
+                disabled ||
+                tasks.batchBusy
+              "
               @click="saveEdit(item)"
             >
               <Check :size="11" />
@@ -170,7 +225,10 @@ async function saveEdit(item: TaskUpdate) {
           </div>
         </template>
 
-        <p v-else class="mt-1 whitespace-pre-wrap break-words text-[12.5px] leading-relaxed text-ink">
+        <p
+          v-else
+          class="mt-1 whitespace-pre-wrap break-words text-[12.5px] leading-relaxed text-ink"
+        >
           {{ item.content }}
         </p>
 

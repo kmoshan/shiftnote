@@ -5,26 +5,34 @@ import { Check, Copy, Database, Moon, RotateCcw, Save, Sun } from '@lucide/vue'
 
 import { api, toApiFailure } from '@/services/api'
 import { formatBytes } from '@/services/format'
-import { useConfirmStore } from '@/stores/confirm'
 import { useTaskStore } from '@/stores/tasks'
+import { useHandoverStore } from '@/stores/handovers'
 import { useToastStore } from '@/stores/toast'
 import { useUiStore } from '@/stores/ui'
 import type { AppInfo, DbStats } from '@/types'
 
 const ui = useUiStore()
 const toast = useToastStore()
-const confirm = useConfirmStore()
 const tasks = useTaskStore()
+const handovers = useHandoverStore()
 
 const info = ref<AppInfo | null>(null)
 const stats = ref<DbStats | null>(null)
 const loading = ref(true)
 const backingUp = ref(false)
 const restoring = ref(false)
+const encryptingLegacyBackups = ref(false)
 const lastBackupPath = ref<string | null>(null)
 const lastRestoreSnapshot = ref<string | null>(null)
+const restoreDialogOpen = ref(false)
+const selectedBackupPath = ref<string | null>(null)
+const restorePassword = ref('')
+const restoreError = ref('')
 
-const backupDir = computed(() => (info.value ? `${info.value.dataDir}\\backups` : '—'))
+const backupDir = computed(() =>
+  info.value ? `${info.value.dataDir}\\backups` : '—'
+)
+const plaintextBackupCount = computed(() => info.value?.plaintextBackupCount ?? 0)
 
 async function load() {
   loading.value = true
@@ -43,7 +51,7 @@ async function load() {
 }
 
 async function backupNow() {
-  if (backingUp.value) return
+  if (backingUp.value || encryptingLegacyBackups.value) return
   backingUp.value = true
   try {
     const result = await api.dbBackup()
@@ -56,8 +64,30 @@ async function backupNow() {
   }
 }
 
+async function encryptLegacyBackups() {
+  if (encryptingLegacyBackups.value || backingUp.value || restoring.value) return
+  encryptingLegacyBackups.value = true
+  try {
+    const result = await api.encryptLegacyBackups()
+    if (result.remaining > 0) {
+      toast.info(`已加密 ${result.encrypted} 个旧备份，仍有 ${result.remaining} 个明文备份，请重试`)
+    } else {
+      toast.success(`已加密 ${result.encrypted} 个旧备份，原明文文件已移除`)
+    }
+  } catch (caught) {
+    toast.error(toApiFailure(caught).message)
+  } finally {
+    try {
+      info.value = await api.appInfo()
+    } catch (caught) {
+      toast.error(toApiFailure(caught).message)
+    }
+    encryptingLegacyBackups.value = false
+  }
+}
+
 async function restoreFromBackup() {
-  if (restoring.value) return
+  if (restoring.value || encryptingLegacyBackups.value) return
 
   let selected: string | null = null
   try {
@@ -65,7 +95,7 @@ async function restoreFromBackup() {
       multiple: false,
       directory: false,
       title: '选择 ShiftNote 备份文件',
-      filters: [{ name: 'ShiftNote 备份', extensions: ['db'] }],
+      filters: [{ name: 'ShiftNote 备份', extensions: ['snbak', 'db'] }],
     })
     selected = typeof picked === 'string' ? picked : null
   } catch (caught) {
@@ -74,22 +104,37 @@ async function restoreFromBackup() {
   }
   if (!selected) return
 
-  const ok = await confirm.ask({
-    title: '从备份恢复数据？',
-    message:
-      '当前数据库会被备份文件覆盖。覆盖前会自动把当前数据快照到备份目录（pre-restore-*.db），必要时可用它回退。',
-    confirmText: '开始恢复',
-    danger: true,
-  })
-  if (!ok) return
+  selectedBackupPath.value = selected
+  restorePassword.value = ''
+  restoreError.value = ''
+  restoreDialogOpen.value = true
+}
+
+function cancelRestore() {
+  if (restoring.value) return
+  restorePassword.value = ''
+  selectedBackupPath.value = null
+  restoreDialogOpen.value = false
+  restoreError.value = ''
+}
+
+async function restoreSelectedBackup() {
+  if (restoring.value || !selectedBackupPath.value) return
+  const selected = selectedBackupPath.value
+  const submittedPassword = restorePassword.value || undefined
+  restorePassword.value = ''
+  restoreError.value = ''
 
   restoring.value = true
   try {
-    const result = await api.dbRestore(selected)
+    const result = await api.dbRestore(selected, submittedPassword)
     lastRestoreSnapshot.value = result.snapshotPath
+    restoreDialogOpen.value = false
+    selectedBackupPath.value = null
 
     // 恢复后重新加载列表、主题与统计信息
-    tasks.selectTask(null)
+    tasks.resetAfterRestore()
+    handovers.resetAfterRestore()
     await tasks.bootstrap()
     await ui.loadTheme()
     await load()
@@ -98,7 +143,7 @@ async function restoreFromBackup() {
       `已恢复 ${result.taskCount} 条事项、${result.updateCount} 条进展（结构版本 v${result.schemaVersion}）`
     )
   } catch (caught) {
-    toast.error(toApiFailure(caught).message)
+    restoreError.value = toApiFailure(caught).message
   } finally {
     restoring.value = false
   }
@@ -131,18 +176,26 @@ onMounted(load)
       <div class="rounded-lg border border-line bg-panel">
         <div class="border-b border-line px-3.5 py-2.5">
           <h2 class="text-[12.5px] font-semibold text-ink">外观</h2>
-          <p class="text-[11px] text-ink-3">浅色为默认主题，深色适合夜间值守。</p>
+          <p class="text-[11px] text-ink-3">
+            浅色为默认主题，深色适合夜间值守。
+          </p>
         </div>
         <div class="grid grid-cols-2 gap-2.5 p-3.5">
           <button
             type="button"
             class="flex items-center gap-2.5 rounded-md border px-3 py-2.5 text-left transition-colors"
-            :class="ui.theme === 'light' ? 'border-accent bg-accent-soft' : 'border-line hover:border-line-strong'"
+            :class="
+              ui.theme === 'light'
+                ? 'border-accent bg-accent-soft'
+                : 'border-line hover:border-line-strong'
+            "
             @click="ui.setTheme('light')"
           >
             <Sun :size="16" class="text-accent" />
             <span class="flex-1">
-              <span class="block text-[12.5px] font-medium text-ink">浅色模式</span>
+              <span class="block text-[12.5px] font-medium text-ink"
+                >浅色模式</span
+              >
               <span class="block text-[11px] text-ink-3">默认，日间使用</span>
             </span>
             <Check v-if="ui.theme === 'light'" :size="14" class="text-accent" />
@@ -151,12 +204,18 @@ onMounted(load)
           <button
             type="button"
             class="flex items-center gap-2.5 rounded-md border px-3 py-2.5 text-left transition-colors"
-            :class="ui.theme === 'dark' ? 'border-accent bg-accent-soft' : 'border-line hover:border-line-strong'"
+            :class="
+              ui.theme === 'dark'
+                ? 'border-accent bg-accent-soft'
+                : 'border-line hover:border-line-strong'
+            "
             @click="ui.setTheme('dark')"
           >
             <Moon :size="16" class="text-accent" />
             <span class="flex-1">
-              <span class="block text-[12.5px] font-medium text-ink">深色模式</span>
+              <span class="block text-[12.5px] font-medium text-ink"
+                >深色模式</span
+              >
               <span class="block text-[11px] text-ink-3">夜间值守更舒适</span>
             </span>
             <Check v-if="ui.theme === 'dark'" :size="14" class="text-accent" />
@@ -169,12 +228,18 @@ onMounted(load)
         <div class="flex items-center gap-2 border-b border-line px-3.5 py-2.5">
           <Database :size="14" class="text-ink-3" />
           <h2 class="text-[12.5px] font-semibold text-ink">本地数据</h2>
-          <span v-if="stats" class="ml-auto text-[11px] tabular-nums text-ink-3">
+          <span v-if="info?.encrypted" class="text-[10.5px] text-success">口令加密</span>
+          <span
+            v-if="stats"
+            class="ml-auto text-[11px] tabular-nums text-ink-3"
+          >
             {{ formatBytes(stats.sizeBytes) }}
           </span>
         </div>
 
-        <div v-if="loading" class="px-3.5 py-4 text-[11.5px] text-ink-3">正在读取数据库信息…</div>
+        <div v-if="loading" class="px-3.5 py-4 text-[11.5px] text-ink-3">
+          正在读取数据库信息…
+        </div>
 
         <div v-else-if="stats" class="divide-y divide-[color:var(--sn-line)]">
           <div class="px-3.5 py-2.5">
@@ -189,50 +254,104 @@ onMounted(load)
                 复制路径
               </button>
             </div>
-            <p class="mt-0.5 break-all font-mono text-[11.5px] text-ink-2">{{ stats.path }}</p>
+            <p class="mt-0.5 break-all font-mono text-[11.5px] text-ink-2">
+              {{ stats.path }}
+            </p>
           </div>
 
           <div class="grid grid-cols-2 gap-3 px-3.5 py-2.5 sm:grid-cols-4">
             <div>
-              <div class="text-[10.5px] uppercase tracking-wide text-ink-3">事项总数</div>
-              <div class="text-[13px] font-semibold tabular-nums text-ink">{{ stats.taskCount }}</div>
+              <div class="text-[10.5px] uppercase tracking-wide text-ink-3">
+                事项总数
+              </div>
+              <div class="text-[13px] font-semibold tabular-nums text-ink">
+                {{ stats.taskCount }}
+              </div>
             </div>
             <div>
-              <div class="text-[10.5px] uppercase tracking-wide text-ink-3">进展记录</div>
-              <div class="text-[13px] font-semibold tabular-nums text-ink">{{ stats.updateCount }}</div>
+              <div class="text-[10.5px] uppercase tracking-wide text-ink-3">
+                进展记录
+              </div>
+              <div class="text-[13px] font-semibold tabular-nums text-ink">
+                {{ stats.updateCount }}
+              </div>
             </div>
             <div>
-              <div class="text-[10.5px] uppercase tracking-wide text-ink-3">结构版本</div>
-              <div class="text-[13px] font-semibold tabular-nums text-ink">v{{ stats.schemaVersion }}</div>
+              <div class="text-[10.5px] uppercase tracking-wide text-ink-3">
+                结构版本
+              </div>
+              <div class="text-[13px] font-semibold tabular-nums text-ink">
+                v{{ stats.schemaVersion }}
+              </div>
             </div>
             <div>
-              <div class="text-[10.5px] uppercase tracking-wide text-ink-3">日志模式</div>
-              <div class="text-[13px] font-semibold text-ink">{{ stats.walEnabled ? 'WAL' : '缺省' }}</div>
+              <div class="text-[10.5px] uppercase tracking-wide text-ink-3">
+                日志模式
+              </div>
+              <div class="text-[13px] font-semibold text-ink">
+                {{ stats.walEnabled ? 'WAL' : '缺省' }}
+              </div>
             </div>
           </div>
 
           <div class="flex flex-wrap items-center gap-2 px-3.5 py-2.5">
-            <button type="button" class="btn h-8" :disabled="backingUp" @click="backupNow">
+            <button
+              type="button"
+              class="btn h-8"
+              :disabled="backingUp || encryptingLegacyBackups"
+              @click="backupNow"
+            >
               <Save :size="13" />
               {{ backingUp ? '备份中…' : '立即备份' }}
             </button>
-            <button type="button" class="btn h-8" :disabled="restoring" @click="restoreFromBackup">
+            <button
+              type="button"
+              class="btn h-8"
+              :disabled="restoring || encryptingLegacyBackups"
+              @click="restoreFromBackup"
+            >
               <RotateCcw :size="13" />
               {{ restoring ? '恢复中…' : '从备份恢复' }}
             </button>
             <span class="text-[11px] text-ink-3">
               备份目录：<span class="font-mono">{{ backupDir }}</span>
             </span>
-            <p v-if="lastBackupPath" class="w-full break-all font-mono text-[10.5px] text-success">
+            <p
+              v-if="lastBackupPath"
+              class="w-full break-all font-mono text-[10.5px] text-success"
+            >
               最近一次备份：{{ lastBackupPath }}
             </p>
-            <p v-if="lastRestoreSnapshot" class="w-full break-all font-mono text-[10.5px] text-ink-3">
+            <p
+              v-if="lastRestoreSnapshot"
+              class="w-full break-all font-mono text-[10.5px] text-ink-3"
+            >
               恢复前的数据已快照到：{{ lastRestoreSnapshot }}
             </p>
             <p class="w-full text-[10.5px] leading-relaxed text-ink-3">
-              恢复会覆盖当前数据；系统会在覆盖前自动快照当前数据库，恢复失败时自动回滚。
+              备份以 .snbak 加密保存，可复制到其他电脑；恢复时需要原备份口令。请妥善保存口令，忘记后无法恢复。
+            </p>
+            <p class="w-full text-[10.5px] leading-relaxed text-ink-3">
+              恢复会覆盖当前数据；系统会在覆盖前自动生成加密快照，恢复失败时自动回滚。关闭应用后数据会重新锁定。
             </p>
           </div>
+        </div>
+
+        <div v-if="plaintextBackupCount > 0" class="space-y-2 border-t border-line px-3.5 py-3">
+          <p class="text-[12px] font-medium text-p1" role="status">
+            仍有 {{ plaintextBackupCount }} 个旧版明文备份
+          </p>
+          <p class="text-[11.5px] leading-relaxed text-ink-2">
+            可使用当前口令加密这些备份。加密成功后原明文文件会移除；失败时保留原文件，可稍后重试。
+          </p>
+          <button
+            class="btn h-8"
+            type="button"
+            :disabled="encryptingLegacyBackups || backingUp || restoring"
+            @click="encryptLegacyBackups"
+          >
+            {{ encryptingLegacyBackups ? '加密中…' : '加密旧备份' }}
+          </button>
         </div>
       </div>
 
@@ -244,14 +363,65 @@ onMounted(load)
         <div class="space-y-1.5 px-3.5 py-3 text-[11.5px] text-ink-2">
           <p>版本 {{ info?.version ?? '—' }} · Tauri 2 + Vue 3 + SQLite</p>
           <p class="text-ink-3">
-            轻量级交接班与事项跟踪工具。数据完全保存在本地，默认不上传任何内容。
+            轻量级交接班与事项跟踪工具。事项与交接记录以口令加密保存在本地，业务功能无需服务器。
+          </p>
+          <p class="text-[11.5px] leading-relaxed text-ink-3">
+            WebView2 运行时可能向 Microsoft 发送诊断与崩溃报告；本地数据加密不保护解锁后的进程内存或系统转储。
           </p>
           <p v-if="info" class="text-ink-3">数据目录：{{ info.dataDir }}</p>
           <p v-if="info?.recoveredBackup" class="text-p0">
-            上次启动检测到数据库损坏，已自动备份并重建：{{ info.recoveredBackup }}
+            上次启动检测到数据库损坏，已自动备份并重建：{{
+              info.recoveredBackup
+            }}
           </p>
         </div>
       </div>
     </div>
+    <Teleport to="body">
+    <div
+      v-if="restoreDialogOpen"
+      class="fixed inset-0 z-40 flex items-center justify-center bg-black/35 p-6"
+      @click.self="cancelRestore"
+      @keydown.esc.prevent="cancelRestore"
+    >
+      <form
+        class="w-full max-w-md space-y-3 rounded-xl border border-line bg-panel p-4 text-ink shadow-[var(--sn-shadow-pop)]"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="restore-title"
+        @submit.prevent="restoreSelectedBackup"
+      >
+        <h2 id="restore-title" class="text-[13.5px] font-semibold">从备份恢复数据？</h2>
+        <p class="text-[12px] leading-relaxed text-ink-2">
+          当前数据会被备份文件覆盖。覆盖前会自动生成加密快照，必要时可用它回退。
+        </p>
+        <p class="break-all font-mono text-[11px] text-ink-3">{{ selectedBackupPath }}</p>
+        <label class="block text-[12px] text-ink-2">
+          原备份口令（可选）
+          <input
+            v-model="restorePassword"
+            class="input mt-1 w-full"
+            type="password"
+            autocomplete="off"
+            aria-label="原备份口令"
+            :disabled="restoring"
+            spellcheck="false"
+            autocapitalize="off"
+            autofocus
+          />
+        </label>
+        <p class="text-[11.5px] leading-relaxed text-ink-3">
+          当前数据生成的备份可留空。来自其他电脑或其他安装的加密备份，即使口令相同，也请填写生成备份时的口令。旧版 .db 备份恢复后也会加密保存。
+        </p>
+        <p v-if="restoreError" class="text-[12px] text-p0" role="alert">{{ restoreError }}</p>
+        <div class="flex justify-end gap-2 pt-1">
+          <button class="btn h-8" type="button" :disabled="restoring" @click="cancelRestore">取消</button>
+          <button class="btn btn-danger h-8" type="submit" :disabled="restoring">
+            {{ restoring ? '恢复中…' : '开始恢复' }}
+          </button>
+        </div>
+      </form>
+    </div>
+    </Teleport>
   </section>
 </template>

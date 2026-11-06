@@ -9,10 +9,11 @@ export type ViewKey =
   | 'focus'
   | 'done'
   | 'hidden'
+  | 'archived'
   | 'trash'
   | 'search'
 
-export type SortKey = 'priority' | 'recorded' | 'created' | 'updated'
+export type SortKey = 'priority' | 'recorded' | 'created' | 'updated' | 'manual'
 
 export interface Task {
   id: string
@@ -62,6 +63,7 @@ export interface Counts {
   focus: number
   done: number
   hidden: number
+  archived: number
   trash: number
 }
 
@@ -103,6 +105,15 @@ export interface AppInfo {
   dbPath: string
   schemaVersion: number
   recoveredBackup: string | null
+  /** 兼容旧版浏览器测试 fixture；生产由后端返回。 */
+  encrypted?: boolean
+  plaintextBackupCount?: number
+}
+
+export interface VaultStatus {
+  configured: boolean
+  unlocked: boolean
+  legacy: boolean
 }
 
 export interface DbStats {
@@ -120,6 +131,11 @@ export interface BackupInfo {
   createdAt: number
 }
 
+export interface LegacyBackupEncryptionSummary {
+  encrypted: number
+  remaining: number
+}
+
 export interface RestoreSummary {
   sourcePath: string
   /** 恢复前自动生成的当前数据快照，可用于回退 */
@@ -132,4 +148,116 @@ export interface RestoreSummary {
 export interface ApiError {
   code?: string
   message: string
+  invalidIds?: string[]
+}
+
+export interface TaskPage {
+  items: Task[]
+  total: number
+  limit: number
+  offset: number
+}
+
+export type TaskBatchAction =
+  | 'complete'
+  | 'reopen'
+  | 'hide'
+  | 'unhide'
+  | 'priority'
+  | 'trash'
+  | 'restore'
+  | 'archive'
+  | 'unarchive'
+  | 'deletePermanent'
+export interface TaskBatchInput {
+  ids: string[]
+  action: TaskBatchAction
+  priority?: number
+}
+export interface TaskBatchResult {
+  requested: number
+  changed: number
+  unchanged: number
+}
+export interface TaskMoveInput {
+  id: string
+  beforeId?: string | null
+  afterId?: string | null
+  view: ViewKey
+}
+
+export type HandoverSection =
+  'new' | 'handled' | 'pending' | 'follow_up' | 'focus'
+export type HandoverFormat = 'markdown' | 'txt'
+export interface Handover {
+  id: string
+  title: string
+  handoverDate: string
+  shiftFrom: string | null
+  shiftTo: string | null
+  note: string | null
+  periodStart: number
+  periodEnd: number
+  status: 'draft' | 'finalized'
+  finalizedAt: number | null
+  snapshotVersion: number
+  createdAt: number
+  updatedAt: number
+}
+export interface TaskSnapshot {
+  task: Task
+  updates: TaskUpdate[]
+}
+export interface HandoverItem {
+  id: string
+  taskId: string | null
+  section: HandoverSection
+  note: string | null
+  sortOrder: number
+  selectedUpdateIds: string[]
+  snapshot: TaskSnapshot
+}
+export interface HandoverDetail {
+  handover: Handover
+  items: HandoverItem[]
+}
+export interface HandoverPage {
+  items: Handover[]
+  total: number
+  limit: number
+  offset: number
+}
+export interface HandoverItemInput {
+  taskId: string
+  section: HandoverSection
+  note: string | null
+  selectedUpdateIds: string[]
+}
+export interface HandoverSaveInput {
+  id?: string | null
+  title: string
+  periodStart: number
+  periodEnd: number
+  shiftFrom: string | null
+  shiftTo: string | null
+  note: string | null
+  items: HandoverItemInput[]
+}
+export interface HandoverFilter {
+  search?: string | null
+  status?: string | null
+  limit?: number
+  offset?: number
+}
+export interface HandoverCandidateFilter {
+  periodStart: number
+  periodEnd: number
+  kind: 'all' | 'new' | 'handled' | 'pending' | 'progress'
+  search?: string | null
+  limit?: number
+  offset?: number
+}
+export interface HandoverExportResult {
+  path: string
+  bytes: number
 }

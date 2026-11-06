@@ -33,9 +33,13 @@ const clockLabel = computed(() => {
 })
 
 const title = computed(() => {
+  if (route.path.startsWith('/handovers')) return '交接班'
+  if (route.path === '/settings') return '设置'
   if (tasks.isSearching) return '搜索结果'
   const view = route.meta.view
-  return typeof view === 'string' ? VIEW_LABELS[view] ?? 'ShiftNote' : 'ShiftNote'
+  return typeof view === 'string'
+    ? (VIEW_LABELS[view] ?? 'ShiftNote')
+    : 'ShiftNote'
 })
 
 function applySearch(value: string) {
@@ -68,10 +72,15 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <header class="flex h-13 shrink-0 items-center gap-3 border-b border-line bg-panel px-3.5 py-2">
+  <header
+    class="flex h-13 shrink-0 items-center gap-3 border-b border-line bg-panel px-3.5 py-2"
+  >
     <div class="min-w-0">
       <h1 class="truncate text-[13.5px] font-semibold text-ink">{{ title }}</h1>
-      <p v-if="tasks.isSearching" class="truncate text-[10.5px] text-ink-3">
+      <p
+        v-if="route.meta.view && tasks.isSearching"
+        class="truncate text-[10.5px] text-ink-3"
+      >
         匹配标题、描述、负责部门与全部历史进展（含已完成 / 已隐藏）
       </p>
     </div>
@@ -80,16 +89,19 @@ onUnmounted(() => {
       <div class="hidden items-center gap-1.5 text-[11.5px] text-ink-3 lg:flex">
         <CalendarClock :size="13" />
         <span class="tabular-nums">{{ dateLabel }}</span>
-        <span class="font-medium tabular-nums text-ink-2">{{ clockLabel }}</span>
+        <span class="font-medium tabular-nums text-ink-2">{{
+          clockLabel
+        }}</span>
       </div>
 
-      <div class="relative">
+      <div v-if="route.meta.view" class="relative">
         <Search
           :size="14"
           class="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-3"
         />
         <input
           ref="searchInput"
+          :disabled="tasks.batchBusy"
           :value="searchText"
           type="text"
           class="input h-8 w-[232px] pl-8 pr-7 text-[12.5px]"
@@ -109,7 +121,13 @@ onUnmounted(() => {
         </button>
       </div>
 
-      <button class="btn btn-primary h-8" type="button" title="新建事项 (Ctrl+N)" @click="ui.openCreate()">
+      <button
+        class="btn btn-primary h-8"
+        type="button"
+        :disabled="tasks.batchBusy"
+        title="新建事项 (Ctrl+N)"
+        @click="ui.openCreate()"
+      >
         <Plus :size="14" :stroke-width="2.4" />
         新建事项
       </button>
