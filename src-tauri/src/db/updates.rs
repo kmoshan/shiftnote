@@ -217,7 +217,10 @@ mod tests {
             .with_conn(|conn| add(conn, &task_id, "将被删除", None))
             .unwrap();
         db.with_conn(|conn| delete(conn, &item.id)).unwrap();
-        assert!(db.with_conn(|conn| list(conn, &task_id)).unwrap().is_empty());
+        assert!(db
+            .with_conn(|conn| list(conn, &task_id))
+            .unwrap()
+            .is_empty());
         assert!(db
             .with_conn(|conn| crate::db::tasks::get(conn, &task_id))
             .unwrap()

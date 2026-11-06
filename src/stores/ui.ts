@@ -99,7 +99,7 @@ export const useUiStore = defineStore('ui', () => {
         if (info.hasUpdate) {
           toast.success(`发现新版本 v${info.latestVersion}`)
         } else {
-          toast.success(`已是最新版本 v${info.currentVersion}`)
+          toast.success(`当前版本 v${info.currentVersion} 无需更新`)
         }
       }
     } catch (error) {
@@ -116,7 +116,8 @@ export const useUiStore = defineStore('ui', () => {
     try {
       const saved = await api.settingsGet(LAST_CHECK_KEY)
       const last = Number(saved ?? 0)
-      if (Number.isFinite(last) && Date.now() - last < AUTO_CHECK_INTERVAL) return
+      const now = Date.now()
+      if (Number.isFinite(last) && last > 0 && last <= now && now - last < AUTO_CHECK_INTERVAL) return
     } catch {
       // 读不到配置也继续检查
     }
@@ -130,6 +131,10 @@ export const useUiStore = defineStore('ui', () => {
   async function openReleasePage(url?: string | null) {
     const target = url ?? updateInfo.value?.releaseUrl
     if (!target) return
+    if (!/^https:\/\/github\.com\/kmoshan\/shiftnote\/releases(?:\/tag\/[^/?#]+)?$/.test(target)) {
+      toast.error('更新地址无效，仅允许打开项目的 GitHub Releases 页面')
+      return
+    }
     try {
       await openUrl(target)
     } catch (error) {

@@ -1,175 +1,116 @@
-# ShiftNote 测试清单
+# ShiftNote 测试与验收
 
-> 记录于 Windows 10 22H2（19045）· x64 · WebView2 156 · 屏幕 2560×1600 @1.5x
+更新：2026-11-06（Asia/Tokyo）。原实施基线 `409b58f`；现已合入上游 `2d67e1f` 的版本检测功能，并完成与本地 0.2.1 的兼容回归。影响和网络边界见 [上游兼容检查](UPSTREAM-UPDATE-COMPAT-2026-11-06.md)。
 
-## 一、自动化测试
+## 本轮结果与边界
 
-### 1.1 Rust 单元测试
+| 验证 | 结果 | 验证范围 |
+| --- | --- | --- |
+| 锁文件安装 `npm ci --no-audit --no-fund` | 通过，168 包 | 使用官方 SHA256 核验的隔离 Node 24.15.0，不修改全局 Node；缓存位于工作区 |
+| `npm test` | 75 项通过 | Pinia 请求乱序、草稿、分页、批量、解锁门禁、首次跳过、设置启用加密、明文/加密备份入口、备份失败重试、恢复后刷新、旧备份入口、处理人迁移、更新缓存/失败重试/链接范围和真实 Vue 组件交互；IPC 为测试替身 |
+| `npm run typecheck` / `npm run build` | 通过 | 前端类型与生产构建 |
+| Playwright | 9 项通过 | Node 24.15.0 + 本机 Edge，真实页面与路由；包含两种模式备份/恢复、跳过后刷新直接进入、解锁后检查更新/打开页面命令/设置页手动检查，IPC 为测试替身；TEMP 重定向到工作区 |
+| 完整 MSVC Rust 测试 | 115 项通过，1 项联网测试默认忽略 | `cargo test --locked --manifest-path src-tauri/Cargo.toml`；真实 SQLite、隔离文件、跳过重启、四种备份恢复组合与全部业务表一致、设置启用加密、跨口令备份、错误回滚、WAL 迁移、防写租约、恢复边界和更新解析/URL/说明限额 |
+| GitHub 公开版本真实联网（合入更新功能时） | 1 项通过 | 当时手工执行 `release_endpoint_smoke -- --ignored --nocapture`；Rust HTTP 读到 current=0.2.1 / latest=0.2.0 / has_update=false / used_proxy=false，不是模拟返回；本次备份专项未重复联网 |
+| 完整 Tauri Release 编译 | 通过 | `npm run app:build`；Windows x64 程序、Tauri 命令宏与注册入口均已编译 |
+| NSIS 打包 | 通过 | 修复普通模式备份入口后重新生成 `ShiftNote_0.2.1_x64-setup.exe`；最终文件校验值见本地产物 `SHA256SUMS.txt` |
+| 交付文件检查 | 通过 | EXE/安装包与编译输出 SHA-256 一致；便携 ZIP 仅含 EXE、便携标记、构建说明和校验文件，不含数据目录 |
+| npm 安全公告 | 0 告警 | `npm audit --ignore-scripts`，包含开发依赖；不是对所有第三方源码的安全认证 |
+| 新增 Cargo 依赖公告 | 83 个新增包已核对 | 3 条 Linux D-Bus 组件停止独立维护的 INFO 提示；Windows 目标依赖树不包含这 3 个包，详见兼容检查。未声称全平台 Cargo 零告警 |
+| 原生窗口基本流程（上一轮 0.1 本地版） | 通过 | 曾在隔离目录加载 WebView2，经真实 IPC 新增、关闭重启保留；该记录不能替代本次口令解锁的原生端到端验收 |
+| 完整原生交互 / 安装升级 | 待验证 | 完整交接、对话框、安装与升级仍需桌面验收 |
+
+所有新增前端测试、后端模块内测试和浏览器流程已接入 `.github/workflows/ci.yml`。上表记录本地执行结果；远端 CI 状态以 PR 的检查页面为准，不能把 CI 配置存在当成远端检查通过。
+
+## 常规执行
 
 ```powershell
-. .\scripts\env.ps1
-cd src-tauri
-cargo test
+npm ci
+npm test
+npm run typecheck
+npm run build
+cargo test --locked --manifest-path src-tauri/Cargo.toml
+npx --no-install playwright install chromium
+npm run test:e2e
 ```
 
-最近一次结果：**29 passed；0 failed**（耗时约 0.2s）。
+Windows 完整 Rust/Tauri 检查应在已安装 MSVC 与 Windows SDK 的 x64 Native Tools 终端运行。
+PowerShell 可先执行 `. .\scripts\env.ps1`，自动发现已安装的 MSVC/SDK，并将本进程 TMP/TEMP 指向忽略的工作区构建目录。测试 Node 需符合 package.json 的 engines。
 
-| 用例 | 覆盖点 |
+浏览器可使用已安装 Edge：
+
+```powershell
+$env:PLAYWRIGHT_BROWSER_CHANNEL = 'msedge'
+npm run test:e2e
+```
+
+浏览器套件自启 Vite，不会修改生产代码的运行时检测；测试 IPC 替身仅在 `tests/e2e/` 注入。截图和失败 trace 位于忽略的 `test-results/`。
+
+此前缺少 MSVC 时曾用隔离 harness 验证 67 项业务测试；安装工具链后 0.1 本地实现通过 73 项，0.2.0 通过 98 项，可选口令版 0.2.1 通过 104 项，合入版本检测后通过 112 项。本次备份专项已使用 VS 2022 Build Tools 和 Windows SDK 运行完整 Tauri crate 的 115 项 Rust 测试，全部通过；联网测试另有合入时的手工通过记录。
+
+当前本地产物整理在 `release/ShiftNote-0.2.1-backup-fix-windows-x64/`：`shiftnote.exe`、便携标记 `shiftnote.portable`、NSIS 安装包及 `SHA256SUMS.txt`。原 `release/ShiftNote-0.2.1-windows-x64/` 和 `release/ShiftNote-0.2.1-update-compat-windows-x64/` 保留历史产物，后者尚未修复明文模式备份入口，不能用其旧校验值标识新版本。目录已在 Git 中忽略，未发布远端版本。生成命令为 `npm run app:build -- -- --locked`（最后的 `--locked` 传给 Cargo）。
+
+备份专项发现的界面问题、四种恢复组合、快照回退和恢复后导出的完整验证见 [备份检查记录](BACKUP-VERIFICATION-2026-11-06.md)。
+
+0.2.1 增加真实文件回归：首次跳过后明文重开、失败写入回滚、旧库跳过迁移、设置启用加密保留事项、加密发布失败保持普通模式、已加密文件禁止跳过、明文模式恢复加密备份须原口令且不改变模式。Windows 原子替换对保留原文件名的短暂共享冲突最多重试约 500 ms；实际读句柄释放后发布成功，持续占用时原文件保留。其他错误不放宽权限或共享规则。
+
+新增安全回归覆盖完整历史 schema 白名单、额外对象/约束/索引拒绝、全部行字段类型检查、文件/记录/字段/快照/SQL 预算、旧版备份源不改动、口令校验与随机 nonce、篡改拒绝、单实例锁、加密备份原口令、恢复前加密快照、保存失败内存回滚、错误闭包不落盘、无法重载时锁定，以及 Windows 源租约与源变更拒绝。没有构造或运行破坏性利用载荷；跨电脑备份用本机两个独立目录和口令模拟，不是第二台物理机器测试。
+
+### 启动故障复现与处理
+
+原产物在本机点击运行后发生 `0xc0000409`，捕获 stderr 显示 Tauri 自动创建 WebView2 窗口时遇到 `os error 5`。独立 Rust 小程序也无法向本机系统 AppData/TEMP 新建目录，但可写工作区；不能把该现象仅归因于签名。
+
+现在先初始化数据，再显式创建窗口；`SHIFTNOTE_DATA_DIR` 同时覆盖数据库与 WebView2。直接运行的本地产物使用显式 `.portable` 标记，写程序旁 `data/`；没有标记的安装版仍使用标准 AppData，不会静默切换数据库。无权限等启动错误会显示具体路径，追加日志并正常退出 1；实测默认 AppData 不可写时已不再直接 abort。日志依次尝试数据目录、TEMP/ShiftNote 和 exe 所在目录的 `logs/startup.log`。
+
+上一轮 0.1 本地便携程序的同字节副本在 `audit.local/Portable QA with spaces/` 运行；未设置 `SHIFTNOTE_DATA_DIR` 或重定向 TEMP，工作目录也与 exe 所在目录不同。已验证页面加载、新增“便携重启验证 2026-11-06”、关闭并重开后仍显示同一事项。测试数据库未放入交付包。这是旧版在本机的便携运行验证，不代表新版口令流程、安装升级或另一台物理机器已验收。
+
+本次尝试启动 0.2.0 隔离副本时，启动调用未返回，期间出现 SmartScreen 进程且未获得新版窗口，随后已取消该启动调用。未绕过系统安全提示，未将这次尝试计作原生启动通过。原有 0.1 程序及其数据未被关闭或改动。
+
+未更改 Windows 安全设置或目录 ACL。当前没有代码签名证书，SmartScreen 提示仍属于未完成的发布签名工作。
+
+## 自动回归对应验收
+
+| 验收 | 覆盖 |
 | --- | --- |
-| `migrates_to_latest_version` | 迁移建表：tasks / task_updates / reminders / handovers / handover_tasks / categories / settings |
-| `migrates_v1_database_and_backfills_department_and_recorded_at` | v1 旧库自动升级：按 assignee 回填部门、按 created_at 回填记录时间，旧数据不丢 |
-| `parses_versions_with_and_without_prefix` | 版本号解析：`v1.2.3` / ` 1.2.3 ` 均可，非法串返回 None |
-| `compares_versions` | 版本比较：0.1.1 / 0.2.0 判定为更新，同版本不算更新 |
-| `parses_proxy_forms` | 系统代理串解析：`host:port` 与 `http=…;https=…` 两种写法 |
-| `day_bounds_are_ordered_and_cover_24h` | 本地“今天”边界计算（含夏令时容差） |
-| `only_corruption_triggers_recovery` | 只有真损坏才重建；锁冲突/权限错误不误伤数据库 |
-| `detects_corrupt_database_and_recovers` | 损坏的 .db 文件自动备份重建 |
-| `restores_from_backup_and_keeps_pre_restore_snapshot` | 从备份恢复：覆盖生效、自动生成恢复前快照、恢复后可继续读写 |
-| `rejects_backup_that_is_not_shiftnote` | 非法备份被拒绝，且不影响现有数据 |
-| `create_and_read_task` | 创建事项、标题 trim、默认记录时间 |
-| `stores_department_and_custom_recorded_at` | 负责部门与自定义记录时间可写入；空字符串清空部门 |
-| `filters_by_recorded_date_not_created_date` | 日期筛选按“记录时间”生效，而非创建时间 |
-| `sorts_by_recorded_time_desc` | 按记录时间排序 |
-| `rejects_empty_title` | 空标题被拒绝 |
-| `list_filters_by_priority_and_view` | 视图过滤 + 优先级排序 |
-| `completing_task_disables_reminder` | 完成即关闭提醒并清空下次提醒时间 |
-| `hiding_removes_from_default_list_but_keeps_progress` | 隐藏后进展与计数不丢 |
-| `trash_restore_and_permanent_delete` | 回收站恢复、永久删除级联清理进展 |
-| `search_matches_title_description_and_progress` | 搜索命中标题 / 描述 / 历史进展 |
-| `search_wildcards_are_escaped` | `%` 被转义，不能匹配任意内容 |
-| `completed_task_can_be_restored` | 取消完成恢复为未完成 |
-| `duplicate_copies_fields_without_progress` | 复制只复制字段，不带进展 |
-| `appends_never_overwrite_history` | 追加两条后历史完整、最新在前（同毫秒时按 rowid 保证顺序稳定） |
-| `edit_keeps_created_at_and_sets_edited_at` | 编辑保留创建时间并写入修改时间 |
-| `rejects_blank_content` | 空进展被拒绝 |
-| `deleting_update_keeps_task` | 删除单条进展不影响事项 |
-| `upserts_setting_values` / `reads_boolean_flags` | 配置写入与布尔读取 |
+| R1 / T01 | A 输入→B 不出现→返回 A 保留；A 保存未结束时 B 新草稿不被清空；编辑状态按事项隔离 |
+| R2 / T01 | 列表、详情的成功/失败/loading 版本保护；关闭、恢复使旧响应失效；连续切换 20 次、乱序成功与失败后只保留第 20 项 |
+| R3 / T03 | 1,001 条相同排序值稳定遍历；相同搜索/优先级/记录日期条件的 total；删除最后一页后页码回退 |
+| R4 / T02 | 共享进展缓存，编辑旧条目后行内历史刷新，摘要与详情使用最新数据 |
+| R5 / T02 / T06 | 昨天→今日不带残留日期；今日搜索固定今天；返回其他视图恢复日期；跨年结束日包含整日，反向区间不发请求 |
+| T04 / T05 | IDs 去重、上限、非法参数/不存在/状态不允许整批失败、幂等完成时间、事务中途失败回滚提醒、当前页全选、失败保留与提交锁定 |
+| T10 | 仅完成可归档，常规视图排归档，取消完成自动取消归档；完整视图移动、跨页锚点与非法锚点；真实组件 drag 事件 |
+| T07 / T08 | v1/v2 升级保留旧关联；跨午夜；候选 1,001 条独立分页；去重、分区、备注、逐条进展；失效进展和已删事项可打开纠正 |
+| T09 | 定稿不可修改，原事项改动/删除不改变快照；事务失败回滚；晚到实时响应不覆盖定稿；预览与文件用同一文本生成器 |
+| 导出 | 中文、换行、Markdown 特殊字符、五个空分区、稳定排序、UTF-8 无 BOM、CRLF；取消、拒绝覆盖、覆盖失败重试；真实 Windows 占用失败保留原文件 |
+| R6 / T11 | 缺表、缺列、伪版本、外键悬挂、约束伪造、迁移失败、不可读交接 JSON、覆盖后验证失败、回滚失败快照路径、恢复锁覆盖写入和回滚 |
 
-### 1.2 前端类型检查与构建
+交接 UI 另覆盖：新建页 query 变化须确认、放弃修改后重开加载已保存内容、取消查看事项不触发详情、候选读取未结束时禁止保存/定稿、切记录清理加载状态、离开后旧响应失效。
+
+## Windows 桌面验收（待执行）
+
+必须使用隔离数据目录，不操作日常数据库：
 
 ```powershell
-npm run typecheck   # vue-tsc --noEmit
-npm run build       # 产出 dist/
+$env:SHIFTNOTE_DATA_DIR = Join-Path $env:TEMP 'shiftnote-acceptance'
+npm run app:dev
 ```
 
-最近一次结果：通过。产物 `index.js 175.37 kB (gzip 63.29 kB)`、`index.css 29.09 kB (gzip 6.75 kB)`。
+- [x] 完整 MSVC `cargo test`：115 项通过；公开版本联网测试另有合入时的通过记录。
+- [x] 上一轮 0.1 本地版原生窗口启动和真实 IPC 新增事项写入隔离数据库。
+- [x] 上一轮 0.1 本地版无数据环境变量、不同工作目录、包含空格的便携路径；新增事项关闭重开后保留。
+- [ ] 0.2.1 原生窗口手工跳过、设置启用口令、解锁、重启及备份恢复全流程（核心存储已有真实 Rust 自动回归，UI 已有模拟 IPC 浏览器回归）。
+- [ ] 1,001 条事项在原生窗口逐页访问，最后一条删除后页码有效，计数与真实数据库一致。
+- [ ] 快速切换 20 次、跨事项草稿、旧进展编辑、今日和日期区间在原生 WebView2 中一致。
+- [ ] 混合状态批量、失败选择保留、归档/取消归档和手动顺序重启后保持。
+- [ ] 交接新建→候选→分区备注→预览→保存重开→定稿→导出完整操作。
+- [ ] 定稿后编辑/删除原事项，历史详情和导出仍不变。
+- [ ] 原生保存对话框取消、已有文件覆盖确认、只读目录和文件占用错误提示。
+- [ ] 在目标 Windows 文本编辑器打开中文 Markdown/TXT，检查编码、换行、时间和特殊字符。
+- [ ] 备份恢复成功/失败回滚后仍可读写，侧栏、详情、草稿、主题和 schema 版本同步。
+- [ ] 940×620 最小窗口、浅色/深色、键盘操作；窗口内 Ctrl+N / Ctrl+F。
+- [x] `npm run app:build` 生成 Windows x64 程序与 NSIS 安装包。
+- [ ] 原版安装→产生数据→安装升级→数据保留；卸载不主动删除数据。
 
-### 1.3 打包
+## 原版本历史验证
 
-```powershell
-npm run app:build
-```
-
-最近一次结果：
-
-```
-Finished `release` profile [optimized] in 1m 46s
-Built application at: D:\dev\target\release\shiftnote.exe
-Finished 1 bundle at: D:\dev\target\release\bundle\nsis\ShiftNote_0.1.0_x64-setup.exe (1.67 MiB)
-```
-
-## 二、手工功能验证（已执行）
-
-环境：`SHIFTNOTE_DATA_DIR=D:\dev\shiftnote-testdata` 隔离数据目录，
-以 release 版 `shiftnote.exe` 运行，并用界面操作 + 直接查询 SQLite 双向核对。
-
-| # | 操作 | 预期 | 实测 |
-| --- | --- | --- | --- |
-| 1 | 空库启动 | 显示空状态，侧栏计数全 0 | ✅ |
-| 2 | 快速添加输入“生产服务器异常问题排查”并回车 | 列表立即出现该事项，计数 1 | ✅ |
-| 3 | 查询数据库 | `tasks` 新增 1 行，UUID 主键，priority=2，status=open，UTF-8 中文完整（11 字符） | ✅ |
-| 4 | 详情面板追加进展“初步判断为数据库连接池耗尽…” | 时间线出现 1 条，时间戳正确，`tasks.updated_at` 同步刷新 | ✅ |
-| 5 | 勾选完成 | 标题划线、显示“已完成”、待处理 1→0、已完成 0→1 | ✅ |
-| 6 | 查询数据库 | `status=done`、`completed_at` 非空、进展记录仍为 1 条 | ✅ |
-| 7 | 搜索“连接池”（只存在于进展中） | 命中该已完成事项，副标题说明“含已完成 / 已隐藏” | ✅ |
-| 8 | 结束进程后重新启动 | 事项、进展、完成状态全部保留 | ✅ |
-| 9 | 内存占用 | 空闲约 22–33 MB | ✅ |
-
-### 2.1 v0.2 字段调整与恢复功能（已执行）
-
-环境：`SHIFTNOTE_DATA_DIR=D:\dev\shiftnote-v2` 隔离目录。
-
-| # | 操作 | 预期 | 实测 |
-| --- | --- | --- | --- |
-| 10 | 打开「新建事项」 | 只显示 标题 / 优先级 / 描述 / **负责部门** / **记录时间** | ✅ 记录人、负责人、交接对象、预计完成均已移除 |
-| 11 | 填写标题与部门并保存 | `department`、`recorded_at` 正确落库 | ✅ 部门=运维二部，recorded_at 取表单打开时间 |
-| 12 | 详情面板 | 显示 记录时间 / 负责部门 / 创建时间 / 最近更新 | ✅ |
-| 13 | 列表行 | 显示「记录 今天 09:00 · 部门 运维二部」 | ✅ |
-| 14 | 「全部事项」与「今日事项」计数 | 今日只统计记录时间在今天的 | ✅ 全部 3 / 今日 2（其中一条记录时间为昨天） |
-| 15 | 设置页「立即备份」 | 备份目录生成 `.db` | ✅ 124 KB |
-| 16 | 直接插入第 4 条数据后「从备份恢复」 | 数据回到 3 条，并生成含 4 条的恢复前快照 | ✅ 见下方核对 |
-| 17 | 恢复后界面 | 事项总数刷新为 3，并显示快照路径 | ✅ |
-| 18 | 3 条进展的事项（收起态） | 只显示最新一条，右侧出现「展开 3 条」 | ✅ |
-| 19 | 点击「展开 3 条」 | 就地展开全部 3 条，含时间、处理人、「最新」标记，按钮变「收起」 | ✅ 09:50 / 09:30 / 09:00 三条齐全 |
-| 20 | 点击「收起」 | 回到只显示最新一条 | ✅ |
-| 21 | 只有 1 条进展的事项 | 不显示展开按钮 | ✅ |
-| 22 | 0.2.0 启动时自动检查更新 | 12 小时内只查一次，最新版本与当前一致时不打扰 | ✅ 设置页显示「已是最新版本（今天 10:33 检查）」 |
-| 23 | 以 0.1.9 构建启动（仓库最新为 v0.2.0） | 顶部出现提示条「发现新版本 v0.2.0（当前 v0.1.9）」 | ✅ 提示条 + 「查看更新」/关闭按钮 |
-| 24 | 打开「设置 → 关于」 | 显示当前版本、发现新版本、检查时间、「下载 v0.2.0」按钮与版本说明摘要 | ✅ |
-| 25 | GitHub 直连失败时的兜底 | 自动读取 Windows 系统代理重试 | ✅ 单元测试覆盖代理串解析；本机经 127.0.0.1:7890 成功 |
-
-恢复前后核对：
-
-```
-LIVE                                任务=3  进展=3   （临时插入的第 4 条已消失）
-pre-restore-20261105-152213.db      任务=4  进展=3   （覆盖前的自动快照）
-shiftnote-backup-20261105-151937.db 任务=3  进展=3   （恢复来源）
-```
-
-> 说明：本机 GUI 自动化存在焦点抢占，原生日期面板与系统文件选择框无法稳定模拟。
-> 日期筛选的查询逻辑由单元测试与「今日事项」计数间接验证；界面上的
-> 「今天 / 昨天」快捷按钮与日期选择器建议手工点一次确认。
-
-## 三、手工功能验证（待执行，随阶段推进）
-
-### 3.1 事项
-
-- [ ] 编辑标题 / 描述 / 优先级 / 负责部门 / 记录时间，保存后列表与详情同步
-- [ ] 复制事项：新事项标题带“（副本）”，不带进展
-- [ ] 隐藏事项：从全部事项消失，出现在已隐藏，进展保留
-- [ ] 取消隐藏：回到全部事项
-- [ ] 移入回收站 → 恢复 → 数据完整
-- [ ] 回收站永久删除 → 事项与进展都消失（二次确认生效）
-- [ ] 空标题保存被拒绝并提示
-- [ ] 日期筛选：点「昨天」只显示昨天记录的事项；再点一次取消
-- [ ] 日期选择器任选一天，列表与计数同步
-
-### 3.2 进展
-
-- [ ] 行内「追加进展」可用，保存后条目立即出现
-- [ ] 编辑进展：出现“已编辑 + 时间”，创建时间不变
-- [ ] 删除进展：二次确认；其余进展不受影响
-- [ ] 正序 / 倒序切换正确
-- [ ] 处理人写入后显示为标签
-
-### 3.3 视图与搜索
-
-- [ ] 今日 / 待处理 / 重点 / 已完成 / 已隐藏 / 回收站计数与内容一致
-- [ ] 优先级筛选 P0–P3 与排序切换正确
-- [ ] 搜索 `%`、`_` 不产生通配匹配
-- [ ] 搜索负责人、交接对象可命中
-
-### 3.4 主题与界面
-
-- [ ] 默认浅色；切换深色后重启仍为深色
-- [ ] Ctrl+N 打开新建；Ctrl+F 聚焦搜索；Esc 关闭弹窗
-- [ ] 窗口缩放至最小尺寸（940×620 逻辑像素）布局不破
-
-### 3.5 数据与异常
-
-- [ ] 设置页显示数据库路径、大小、事项/进展数量、schema 版本
-- [ ] 「立即备份」生成 `.db` 且可用 SQLite 打开
-- [ ] 手动把 `shiftnote.db` 改成乱码后启动 → 自动备份为 `shiftnote.corrupt-*.db` 并重建
-- [ ] 数据目录只读时启动 → 给出可读错误（待完善为对话框提示）
-
-### 3.6 性能
-
-- [ ] 1000 条事项下列表滚动流畅（`LIMIT 500` 分页待接入）
-- [ ] 冷启动到可交互 < 2s
-
-## 四、回归重点（每次改动后必跑）
-
-1. `cargo test` 全绿。
-2. `npm run typecheck` 无错误。
-3. 新增事项 → 追加进展 → 完成 → 重启，四步数据一致。
-4. 搜索历史进展仍可命中已完成事项。
+仓库原有 v0.1.0 记录：Windows 10 22H2 / WebView2 156 上 26 项 Rust 测试、前端构建和 NSIS 打包通过，执行过新增→追加进展→完成→重启，以及部门/记录时间调整、备份恢复和行内历史展开。上述属于旧版本记录，本轮新增交接和批量功能仍需完成前面的桌面清单。

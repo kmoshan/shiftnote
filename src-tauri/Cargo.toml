@@ -1,10 +1,10 @@
 [package]
 name = "shiftnote"
-version = "0.2.0"
+version = "0.2.1"
 description = "ShiftNote - 轻量级交接班管理与事项跟踪"
 authors = ["ShiftNote"]
 edition = "2021"
-rust-version = "1.77.2"
+rust-version = "1.89.0"
 
 [lib]
 name = "shiftnote_lib"
@@ -17,15 +17,22 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+semver = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-rusqlite = { version = "0.32", features = ["bundled", "backup"] }
+rusqlite = { version = "0.41.1", features = ["bundled", "backup", "serialize", "hooks", "limits"] }
+argon2 = { version = "0.5.3", features = ["zeroize"] }
+aes-gcm = { version = "0.10.3", features = ["zeroize"] }
+# Enable key-schedule zeroization in the AES backend shared by aes-gcm.
+aes = { version = "0.8.4", features = ["zeroize"] }
+zeroize = { version = "1.9.1", features = ["derive"] }
+getrandom = "0.3.4"
+fs2 = "0.4.3"
+sha2 = "0.10.9"
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 thiserror = "2"
-# 检查更新：只访问 api.github.com，不涉及用户数据
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-semver = "1"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"

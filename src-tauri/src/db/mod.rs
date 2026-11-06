@@ -1,12 +1,21 @@
 //! 数据库连接管理与公共工具。
 
+pub mod batch;
+pub mod handovers;
 pub mod migrations;
+pub(super) mod restore_validation;
 pub mod settings;
 pub mod tasks;
 pub mod updates;
+mod vault_storage;
+
+#[cfg(test)]
+mod restore_tests;
+#[cfg(test)]
+mod vault_tests;
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -32,9 +41,7 @@ pub fn local_day_bounds(offset_days: i64) -> (i64, i64) {
 }
 
 pub fn day_start_ms(date: NaiveDate) -> i64 {
-    let naive = date
-        .and_hms_opt(0, 0, 0)
-        .expect("00:00:00 一定合法");
+    let naive = date.and_hms_opt(0, 0, 0).expect("00:00:00 一定合法");
     Local
         .from_local_datetime(&naive)
         .earliest()
@@ -57,6 +64,10 @@ pub struct Db {
     conn: Mutex<Connection>,
     path: PathBuf,
     schema_version: AtomicI64,
+    requires_vault: bool,
+    unlocked: AtomicBool,
+    vault: Mutex<Option<vault_storage::StorageSession>>,
+    _instance_lock: Option<std::fs::File>,
 }
 
 impl Db {
@@ -107,6 +118,7 @@ impl Db {
         }
 
         let mut conn = Connection::open(path)?;
+        restore_validation::harden_connection(&conn)?;
 
         // 完整性快速自检：损坏文件会在此时暴露，而不是在使用中随机报错
         let check: String = conn.query_row("PRAGMA quick_check(1)", [], |row| row.get(0))?;
@@ -128,18 +140,27 @@ impl Db {
             conn: Mutex::new(conn),
             path: path.to_path_buf(),
             schema_version: AtomicI64::new(schema_version),
+            requires_vault: false,
+            unlocked: AtomicBool::new(true),
+            vault: Mutex::new(None),
+            _instance_lock: None,
         })
     }
 
     #[cfg(test)]
     pub fn open_in_memory() -> AppResult<Self> {
         let mut conn = Connection::open_in_memory()?;
+        restore_validation::harden_connection(&conn)?;
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;
         let schema_version = migrations::apply(&mut conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
             path: PathBuf::from(":memory:"),
             schema_version: AtomicI64::new(schema_version),
+            requires_vault: false,
+            unlocked: AtomicBool::new(true),
+            vault: Mutex::new(None),
+            _instance_lock: None,
         })
     }
 
@@ -156,19 +177,55 @@ impl Db {
     }
 
     fn lock(&self) -> AppResult<MutexGuard<'_, Connection>> {
-        self.conn
+        let guard = self
+            .conn
             .lock()
-            .map_err(|_| AppError::Other("数据库连接状态异常，请重启应用".into()))
+            .map_err(|_| AppError::Other("数据库连接状态异常，请重启应用".into()))?;
+        if !self.unlocked.load(Ordering::Acquire) {
+            return Err(AppError::validation("请先完成首次设置或解锁本地数据"));
+        }
+        Ok(guard)
     }
 
     pub fn with_conn<T>(&self, f: impl FnOnce(&Connection) -> AppResult<T>) -> AppResult<T> {
-        let guard = self.lock()?;
-        f(&guard)
+        let mut guard = self.lock()?;
+        if !self.requires_vault {
+            return f(&guard);
+        }
+        let before = change_marker(&guard)?;
+        let result = f(&guard);
+        match result {
+            Ok(value) => {
+                self.persist_if_changed(&mut guard, before)?;
+                Ok(value)
+            }
+            Err(error) => {
+                self.rollback_failed_operation(&mut guard, before)?;
+                Err(error)
+            }
+        }
     }
 
-    pub fn with_conn_mut<T>(&self, f: impl FnOnce(&mut Connection) -> AppResult<T>) -> AppResult<T> {
+    pub fn with_conn_mut<T>(
+        &self,
+        f: impl FnOnce(&mut Connection) -> AppResult<T>,
+    ) -> AppResult<T> {
         let mut guard = self.lock()?;
-        f(&mut guard)
+        if !self.requires_vault {
+            return f(&mut guard);
+        }
+        let before = change_marker(&guard)?;
+        let result = f(&mut guard);
+        match result {
+            Ok(value) => {
+                self.persist_if_changed(&mut guard, before)?;
+                Ok(value)
+            }
+            Err(error) => {
+                self.rollback_failed_operation(&mut guard, before)?;
+                Err(error)
+            }
+        }
     }
 
     /// 备份目录：与数据库文件同级。
@@ -185,75 +242,150 @@ impl Db {
             std::fs::create_dir_all(dir)?;
         }
         {
-            let guard = self.lock()?;
-            guard.backup(rusqlite::DatabaseName::Main, dest, None)?;
+            let mut guard = self.lock()?;
+            if self.requires_vault {
+                let session = self
+                    .vault
+                    .lock()
+                    .map_err(|_| AppError::Other("加密会话状态异常，请重启应用".into()))?;
+                return session
+                    .as_ref()
+                    .ok_or_else(|| AppError::validation("请先解锁本地数据"))?
+                    .write(&mut guard, dest, false);
+            }
+            guard.backup(
+                rusqlite::MAIN_DB,
+                dest,
+                None::<fn(rusqlite::backup::Progress)>,
+            )?;
         }
         Ok(std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0))
     }
 
-    /// 从备份文件恢复数据。
-    ///
-    /// 流程：预检（完整性 / 版本 / 是否本应用的库）→ 快照当前数据 →
-    /// 用 SQLite backup API 覆盖在线连接 → 补齐迁移 → 外键一致性校验。
-    /// 任一步失败都会尝试用快照回滚，保证不会把库改成半截状态。
+    /// 在独立副本上迁移和验证后恢复；同一个连接锁覆盖快照、覆盖与回滚。
     pub fn restore_from(&self, source: &Path) -> AppResult<RestoreSummary> {
+        if self.requires_vault {
+            return self.restore_secure(source, None);
+        }
+        self.restore_from_using(source, copy_database)
+    }
+
+    pub fn restore_with_password(
+        &self,
+        source: &Path,
+        password: Option<&str>,
+    ) -> AppResult<RestoreSummary> {
+        if self.requires_vault {
+            self.restore_secure(source, password)
+        } else {
+            self.restore_from(source)
+        }
+    }
+
+    fn restore_from_using(
+        &self,
+        source: &Path,
+        copy: impl FnMut(&Connection, &mut Connection) -> AppResult<()>,
+    ) -> AppResult<RestoreSummary> {
+        self.restore_from_with_limits(source, &Default::default(), copy)
+    }
+
+    fn restore_from_with_limits(
+        &self,
+        source: &Path,
+        limits: &restore_validation::RestoreLimits,
+        mut copy: impl FnMut(&Connection, &mut Connection) -> AppResult<()>,
+    ) -> AppResult<RestoreSummary> {
         let source_path = source
             .canonicalize()
             .unwrap_or_else(|_| source.to_path_buf());
-
         if !source_path.is_file() {
             return Err(AppError::not_found("备份文件不存在，或不是一个文件"));
         }
-        if source_path == self.path {
+        let live_path = self
+            .path
+            .canonicalize()
+            .unwrap_or_else(|_| self.path.clone());
+        if source_path == live_path {
             return Err(AppError::validation(
                 "不能使用正在运行的数据库文件作为恢复来源",
             ));
         }
 
-        inspect_backup(&source_path)?;
-
-        // 覆盖前先保留当前数据，便于回退
-        let stamp = Local::now().format("%Y%m%d-%H%M%S").to_string();
-        let snapshot = self.backups_dir().join(format!("pre-restore-{stamp}.db"));
-        self.backup_to(&snapshot)?;
-
-        if let Err(error) = self.copy_from(&source_path) {
-            let _ = self.copy_from(&snapshot);
-            return Err(error);
+        restore_validation::check_file_size(&source_path, limits)?;
+        let mut guard = self.lock()?;
+        let mut source_conn =
+            Connection::open_with_flags(&source_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        restore_validation::harden_connection(&source_conn)?;
+        let source_budget = restore_validation::SqlBudget::new(&mut source_conn, limits)?;
+        // 固定同一个只读快照，避免校验与复制之间来源被并发改写。
+        source_budget.execute_batch("BEGIN;")?;
+        restore_validation::inspect_backup(&source_budget, limits)
+            .map_err(|error| AppError::validation(format!("备份预检失败：{error}")))?;
+        let backups = self.backups_dir();
+        std::fs::create_dir_all(&backups)?;
+        let temporary =
+            TemporaryDatabase(backups.join(format!("restore-check-{}.db", uuid::Uuid::new_v4())));
+        let mut staged = Connection::open(&temporary.0)?;
+        restore_validation::harden_connection(&staged)?;
+        copy_database(&source_budget, &mut staged)?;
+        drop(source_budget);
+        drop(source_conn);
+        {
+            let mut budget = restore_validation::SqlBudget::new(&mut staged, limits)?;
+            restore_validation::inspect_backup(&budget, limits)?;
+            migrations::apply(&mut budget)
+                .map_err(|error| AppError::validation(format!("备份迁移失败：{error}")))?;
+            restore_validation::validate_database(&budget, limits)
+                .map_err(|error| AppError::validation(format!("备份校验失败：{error}")))?;
         }
 
-        // 旧备份可能是低版本结构，补齐迁移
-        let schema_version = match self.with_conn_mut(|conn| migrations::apply(conn)) {
-            Ok(version) => version,
+        let stamp = Local::now().format("%Y%m%d-%H%M%S");
+        let snapshot = backups.join(format!("pre-restore-{stamp}-{}.db", uuid::Uuid::new_v4()));
+        guard.backup(
+            rusqlite::MAIN_DB,
+            &snapshot,
+            None::<fn(rusqlite::backup::Progress)>,
+        )?;
+        let result: AppResult<(i64, i64, i64)> = (|| {
+            copy(&staged, &mut guard)?;
+            guard.execute_batch("PRAGMA foreign_keys=ON;")?;
+            let summary = {
+                let budget = restore_validation::SqlBudget::new(&mut guard, limits)?;
+                restore_validation::validate_database(&budget, limits)?
+            };
+            guard.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+            Ok(summary)
+        })();
+        let (schema_version, task_count, update_count) = match result {
+            Ok(summary) => summary,
             Err(error) => {
-                let _ = self.copy_from(&snapshot);
-                return Err(error);
+                let rollback: AppResult<()> = (|| {
+                    let previous =
+                        Connection::open_with_flags(&snapshot, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+                    restore_validation::harden_connection(&previous)?;
+                    copy(&previous, &mut guard)?;
+                    validate_database(&mut guard)?;
+                    Ok(())
+                })();
+                let foreign_keys = guard.execute_batch("PRAGMA foreign_keys=ON;");
+                if let Err(rollback_error) = rollback {
+                    return Err(AppError::Other(format!(
+                        "恢复失败：{error}；回滚也失败：{rollback_error}。恢复前快照保留于 {}{}",
+                        snapshot.display(),
+                        foreign_keys
+                            .err()
+                            .map(|e| format!("；外键重新启用失败：{e}"))
+                            .unwrap_or_default()
+                    )));
+                }
+                foreign_keys?;
+                return Err(AppError::Other(format!("恢复失败并已回滚：{error}")));
             }
         };
-
-        // 外键一致性校验：备份内部若有悬挂引用，直接回滚
-        let broken = self.with_conn(|conn| {
-            Ok(conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
-                row.get::<_, i64>(0)
-            })?)
-        })?;
-        if broken > 0 {
-            let _ = self.copy_from(&snapshot);
-            return Err(AppError::validation(format!(
-                "备份中存在 {broken} 处关联数据不一致，已回滚到恢复前的数据"
-            )));
-        }
-
-        let _ = self.with_conn(|conn| Ok(conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?));
         self.set_schema_version(schema_version);
-
-        let (task_count, update_count) = self.with_conn(|conn| {
-            let tasks: i64 = conn.query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get(0))?;
-            let updates: i64 =
-                conn.query_row("SELECT COUNT(*) FROM task_updates", [], |row| row.get(0))?;
-            Ok((tasks, updates))
-        })?;
-
+        drop(staged);
+        drop(temporary);
         Ok(RestoreSummary {
             source_path: source_path.display().to_string(),
             snapshot_path: snapshot.display().to_string(),
@@ -261,22 +393,6 @@ impl Db {
             update_count,
             schema_version,
         })
-    }
-
-    /// 把某个数据库文件的全部内容覆盖到当前在线连接。
-    fn copy_from(&self, source: &Path) -> AppResult<()> {
-        let src = Connection::open_with_flags(source, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-        let mut guard = self.lock()?;
-
-        // 覆盖期间先关闭外键检查，完成后统一校验
-        guard.execute_batch("PRAGMA foreign_keys = OFF;")?;
-        let result = {
-            let backup = rusqlite::backup::Backup::new(&src, &mut guard)?;
-            backup.run_to_completion(256, Duration::from_millis(5), None)
-        };
-        let _ = guard.execute_batch("PRAGMA foreign_keys = ON;");
-        result?;
-        Ok(())
     }
 
     pub fn file_size(&self) -> u64 {
@@ -289,6 +405,50 @@ impl Db {
             Ok(mode.eq_ignore_ascii_case("wal"))
         })
         .unwrap_or(false)
+    }
+}
+
+fn change_marker(conn: &Connection) -> AppResult<(u64, i64)> {
+    Ok((
+        conn.total_changes(),
+        conn.query_row("PRAGMA schema_version", [], |row| row.get(0))?,
+    ))
+}
+
+/// foreign_keys 的恢复位于闭包外，Backup::new 失败也不能绕过。
+fn copy_database(source: &Connection, destination: &mut Connection) -> AppResult<()> {
+    destination.execute_batch("PRAGMA foreign_keys=OFF;")?;
+    let result: AppResult<()> = (|| {
+        let backup = rusqlite::backup::Backup::new(source, destination)?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            if std::time::Instant::now() >= deadline {
+                return Err(AppError::validation("数据库复制超过 30 秒执行预算"));
+            }
+            match backup.step(256)? {
+                rusqlite::backup::StepResult::Done => return Ok(()),
+                rusqlite::backup::StepResult::More => {}
+                _ => std::thread::sleep(Duration::from_millis(5)),
+            }
+        }
+    })();
+    let enabled = destination.execute_batch("PRAGMA foreign_keys=ON;");
+    match (result, enabled) {
+        (Err(error), Err(enable_error)) => Err(AppError::Other(format!(
+            "{error}；重新启用外键失败：{enable_error}"
+        ))),
+        (Err(error), _) => Err(error),
+        (_, Err(error)) => Err(error.into()),
+        _ => Ok(()),
+    }
+}
+
+struct TemporaryDatabase(PathBuf);
+impl Drop for TemporaryDatabase {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+        let _ = std::fs::remove_file(sidecar_path(&self.0, "-wal"));
+        let _ = std::fs::remove_file(sidecar_path(&self.0, "-shm"));
     }
 }
 
@@ -310,35 +470,12 @@ fn is_corruption(err: &AppError) -> bool {
     }
 }
 
-/// 恢复前检查备份文件：完整性、schema 版本、是否 ShiftNote 数据库。
-fn inspect_backup(path: &Path) -> AppResult<i64> {
-    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-
-    let check: String = conn.query_row("PRAGMA quick_check(1)", [], |row| row.get(0))?;
-    if !check.eq_ignore_ascii_case("ok") {
-        return Err(AppError::validation(format!("备份文件已损坏：{check}")));
-    }
-
-    let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    if version > migrations::latest_version() {
-        return Err(AppError::validation(
-            "该备份来自更高版本的 ShiftNote，请先升级应用再恢复",
-        ));
-    }
-
-    let required: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM sqlite_master
-          WHERE type = 'table' AND name IN ('tasks', 'task_updates')",
-        [],
-        |row| row.get(0),
-    )?;
-    if required < 2 {
-        return Err(AppError::validation("该文件不是有效的 ShiftNote 备份"));
-    }
-
-    Ok(version)
+/// 最新库的完整校验；仅用于覆盖后的验证和失败回滚。
+fn validate_database(conn: &mut Connection) -> AppResult<(i64, i64, i64)> {
+    let limits = restore_validation::RestoreLimits::default();
+    let budget = restore_validation::SqlBudget::new(conn, &limits)?;
+    restore_validation::validate_database(&budget, &limits)
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -350,9 +487,8 @@ mod tests {
 
         let tables: Vec<String> = db
             .with_conn(|conn| {
-                let mut stmt = conn.prepare(
-                    "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name",
-                )?;
+                let mut stmt = conn
+                    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")?;
                 let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
                 Ok(rows.collect::<Result<Vec<_>, _>>()?)
             })
@@ -377,7 +513,10 @@ mod tests {
         assert!(start < end);
         // 允许夏令时造成的 1 小时偏差
         let span_hours = (end - start) / 3_600_000;
-        assert!((23..=25).contains(&span_hours), "跨度异常：{span_hours} 小时");
+        assert!(
+            (23..=25).contains(&span_hours),
+            "跨度异常：{span_hours} 小时"
+        );
     }
 
     #[test]
@@ -444,7 +583,11 @@ mod tests {
             .expect("旧数据必须保留");
 
         assert_eq!(task.title, "旧版本事项");
-        assert_eq!(task.department.as_deref(), Some("张伟"), "按 assignee 回填部门");
+        assert_eq!(
+            task.department.as_deref(),
+            Some("张伟"),
+            "按 assignee 回填部门"
+        );
         assert_eq!(task.recorded_at, 1000, "用 created_at 回填记录时间");
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -459,7 +602,12 @@ mod tests {
 
         let outcome = Db::open_or_recover(&path).expect("损坏数据库应能自动恢复");
         assert!(outcome.recovered_backup.is_some());
-        assert!(outcome.db.with_conn(|c| Ok(c.query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get::<_, i64>(0))?)).is_ok());
+        assert!(outcome
+            .db
+            .with_conn(|c| Ok(
+                c.query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get::<_, i64>(0))?
+            ))
+            .is_ok());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -524,13 +672,15 @@ mod tests {
 
     #[test]
     fn rejects_backup_that_is_not_shiftnote() {
-        let dir = std::env::temp_dir().join(format!("shiftnote-badrestore-{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("shiftnote-badrestore-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
 
         let junk = dir.join("junk.db");
         {
             let conn = Connection::open(&junk).unwrap();
-            conn.execute_batch("CREATE TABLE foo (id INTEGER);").unwrap();
+            conn.execute_batch("CREATE TABLE foo (id INTEGER);")
+                .unwrap();
         }
 
         let target = Db::open_or_recover(&dir.join("target.db")).unwrap().db;

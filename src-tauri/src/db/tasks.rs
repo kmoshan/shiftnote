@@ -17,6 +17,10 @@ use crate::models::*;
 const TITLE_MAX_CHARS: usize = 200;
 const DESC_MAX_CHARS: usize = 20_000;
 
+#[cfg(test)]
+#[path = "task_regression_tests.rs"]
+mod regression_tests;
+
 /// 统一的「事项日期」表达式：优先记录时间，缺失时退回创建时间。
 const TASK_DATE: &str = "COALESCE(t.recorded_at, t.created_at)";
 
@@ -97,36 +101,36 @@ fn validate_title(title: &str) -> AppResult<String> {
     Ok(trimmed.to_string())
 }
 
-pub fn list(conn: &Connection, filter: &TaskFilter) -> AppResult<Vec<Task>> {
+fn query_parts(filter: &TaskFilter) -> AppResult<(String, String, Vec<Value>)> {
     let mut clauses: Vec<String> = Vec::new();
     let mut values: Vec<Value> = Vec::new();
 
     let view = filter.view.as_deref().unwrap_or("all");
     match view {
-        "all" => clauses.push("t.deleted_at IS NULL AND t.hidden = 0".into()),
+        "all" => clauses.push("t.deleted_at IS NULL AND t.hidden = 0 AND t.archived = 0".into()),
         "today" => {
             // 今日 = 记录时间落在本地今天
             let (start, end) = local_day_bounds(0);
             clauses.push(format!(
-                "t.deleted_at IS NULL AND t.hidden = 0 AND {TASK_DATE} >= ? AND {TASK_DATE} < ?"
+                "t.deleted_at IS NULL AND t.hidden = 0 AND t.archived = 0 AND {TASK_DATE} >= ? AND {TASK_DATE} < ?"
             ));
             values.push(Value::Integer(start));
             values.push(Value::Integer(end));
         }
         "open" => clauses.push(
-            "t.deleted_at IS NULL AND t.hidden = 0 AND t.status = 'open'".into(),
+            "t.deleted_at IS NULL AND t.hidden = 0 AND t.archived = 0 AND t.status = 'open'".into(),
         ),
         "focus" => clauses.push(
-            "t.deleted_at IS NULL AND t.hidden = 0 AND t.status = 'open' AND t.priority <= 1".into(),
+            "t.deleted_at IS NULL AND t.hidden = 0 AND t.archived = 0 AND t.status = 'open' AND t.priority <= 1".into(),
         ),
         "done" => clauses.push(
-            "t.deleted_at IS NULL AND t.hidden = 0 AND t.status = 'done'".into(),
+            "t.deleted_at IS NULL AND t.hidden = 0 AND t.archived = 0 AND t.status = 'done'".into(),
         ),
-        "hidden" => clauses.push("t.deleted_at IS NULL AND t.hidden = 1".into()),
+        "hidden" => clauses.push("t.deleted_at IS NULL AND t.hidden = 1 AND t.archived = 0".into()),
         "trash" => clauses.push("t.deleted_at IS NOT NULL".into()),
         "archived" => clauses.push("t.deleted_at IS NULL AND t.archived = 1".into()),
-        // 全局搜索：包含已完成与已隐藏的事项，但不含回收站
-        "search" => clauses.push("t.deleted_at IS NULL".into()),
+        // 全局搜索包含已完成与已隐藏事项；归档和回收站由各自视图访问。
+        "search" => clauses.push("t.deleted_at IS NULL AND t.archived = 0".into()),
         other => {
             return Err(AppError::validation(format!("未知的视图：{other}")));
         }
@@ -145,7 +149,12 @@ pub fn list(conn: &Connection, filter: &TaskFilter) -> AppResult<Vec<Task>> {
         values.push(Value::Text(category_id.to_string()));
     }
 
-    if let Some(search) = filter.search.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(search) = filter
+        .search
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         let like = format!("%{}%", escape_like(search));
         // 标题、描述、负责部门，以及历史进展内容
         clauses.push(
@@ -162,13 +171,18 @@ pub fn list(conn: &Connection, filter: &TaskFilter) -> AppResult<Vec<Task>> {
     }
 
     // 日期范围按「记录时间」过滤，半开区间 [from, to)
-    if let Some(from) = filter.date_from {
-        clauses.push(format!("{TASK_DATE} >= ?"));
-        values.push(Value::Integer(from));
-    }
-    if let Some(to) = filter.date_to {
-        clauses.push(format!("{TASK_DATE} < ?"));
-        values.push(Value::Integer(to));
+    if view != "today" {
+        if matches!((filter.date_from, filter.date_to), (Some(from), Some(to)) if from >= to) {
+            return Err(AppError::validation("记录日期的起点必须早于终点"));
+        }
+        if let Some(from) = filter.date_from {
+            clauses.push(format!("{TASK_DATE} >= ?"));
+            values.push(Value::Integer(from));
+        }
+        if let Some(to) = filter.date_to {
+            clauses.push(format!("{TASK_DATE} < ?"));
+            values.push(Value::Integer(to));
+        }
     }
 
     let order = match filter.sort.as_deref() {
@@ -190,13 +204,19 @@ pub fn list(conn: &Connection, filter: &TaskFilter) -> AppResult<Vec<Task>> {
         }
     };
 
-    let limit = filter.limit.unwrap_or(500).clamp(1, 2000);
-    let offset = filter.offset.unwrap_or(0).max(0);
+    Ok((clauses.join(" AND "), format!("{order}, t.id ASC"), values))
+}
 
-    let sql = format!(
-        "{SELECT_BASE} WHERE {} ORDER BY {order} LIMIT ? OFFSET ?",
-        clauses.join(" AND ")
-    );
+fn query_items(
+    conn: &Connection,
+    clauses: &str,
+    order: &str,
+    values: &[Value],
+    limit: i64,
+    offset: i64,
+) -> AppResult<Vec<Task>> {
+    let sql = format!("{SELECT_BASE} WHERE {clauses} ORDER BY {order} LIMIT ? OFFSET ?");
+    let mut values = values.to_vec();
     values.push(Value::Integer(limit));
     values.push(Value::Integer(offset));
 
@@ -207,6 +227,102 @@ pub fn list(conn: &Connection, filter: &TaskFilter) -> AppResult<Vec<Task>> {
         tasks.push(row?);
     }
     Ok(tasks)
+}
+
+/// 兼容旧命令的数组响应与默认上限；新界面应使用 page 获取总数。
+pub fn list(conn: &Connection, filter: &TaskFilter) -> AppResult<Vec<Task>> {
+    let (clauses, order, values) = query_parts(filter)?;
+    query_items(
+        conn,
+        &clauses,
+        &order,
+        &values,
+        filter.limit.unwrap_or(500).clamp(1, 2000),
+        filter.offset.unwrap_or(0).max(0),
+    )
+}
+
+pub fn page(conn: &Connection, filter: &TaskFilter) -> AppResult<TaskPage> {
+    let (clauses, order, values) = query_parts(filter)?;
+    let total = conn.query_row(
+        &format!("SELECT COUNT(*) FROM tasks t WHERE {clauses}"),
+        params_from_iter(values.iter()),
+        |row| row.get(0),
+    )?;
+    let limit = filter.limit.unwrap_or(50).clamp(1, 500);
+    let offset = filter.offset.unwrap_or(0).max(0);
+    let items = query_items(conn, &clauses, &order, &values, limit, offset)?;
+    Ok(TaskPage {
+        items,
+        total,
+        limit,
+        offset,
+    })
+}
+
+pub fn set_archived(conn: &Connection, id: &str, archived: bool) -> AppResult<Task> {
+    crate::db::batch::set_one(
+        conn,
+        id,
+        if archived {
+            crate::db::batch::Action::Archive
+        } else {
+            crate::db::batch::Action::Unarchive
+        },
+    )?;
+    get_required(conn, id)
+}
+
+/// before_id 为前一项，after_id 为后一项；锚点必须来自完整视图并且相邻。
+pub fn move_task(conn: &Connection, input: &TaskMoveInput) -> AppResult<()> {
+    if input.view == "search" {
+        return Err(AppError::validation("搜索视图不能调整手动顺序"));
+    }
+    let (clauses, _, values) = query_parts(&TaskFilter {
+        view: Some(input.view.clone()),
+        ..Default::default()
+    })?;
+    let tx = conn.unchecked_transaction()?;
+    let mut ids = {
+        let mut stmt = tx.prepare(&format!("SELECT t.id FROM tasks t WHERE {clauses} ORDER BY t.sort_order ASC,t.created_at DESC,t.id ASC"))?;
+        let rows = stmt.query_map(params_from_iter(values.iter()), |row| {
+            row.get::<_, String>(0)
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    let index = ids
+        .iter()
+        .position(|id| id == &input.id)
+        .ok_or_else(|| AppError::validation("移动事项不属于当前视图"))?;
+    ids.remove(index);
+    let position = |anchor: &String| {
+        ids.iter()
+            .position(|id| id == anchor)
+            .ok_or_else(|| AppError::validation("排序锚点不属于当前视图，或与移动事项相同"))
+    };
+    let insertion = match (&input.before_id, &input.after_id) {
+        (Some(before), Some(after)) => {
+            let before = position(before)?;
+            let after = position(after)?;
+            if before + 1 != after {
+                return Err(AppError::validation("排序锚点已发生变化，请刷新后重试"));
+            }
+            after
+        }
+        (Some(before), None) => position(before)? + 1,
+        (None, Some(after)) => position(after)?,
+        (None, None) if ids.is_empty() => 0,
+        _ => return Err(AppError::validation("移动事项必须提供至少一个相邻锚点")),
+    };
+    ids.insert(insertion, input.id.clone());
+    for (index, id) in ids.iter().enumerate() {
+        tx.execute(
+            "UPDATE tasks SET sort_order=? WHERE id=?",
+            params![(index as i64 + 1) * 10, id],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
 }
 
 pub fn get(conn: &Connection, id: &str) -> AppResult<Option<Task>> {
@@ -253,10 +369,18 @@ pub fn create(conn: &Connection, input: &CreateTaskInput) -> AppResult<Task> {
         params![
             id,
             title,
-            input.description.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+            input
+                .description
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty()),
             priority,
             input.category_id.as_deref().filter(|s| !s.is_empty()),
-            input.department.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+            input
+                .department
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty()),
             recorded_at,
             sort_order,
             now,
@@ -328,103 +452,43 @@ pub fn update(conn: &Connection, id: &str, patch: &TaskPatch) -> AppResult<Task>
 }
 
 pub fn set_completed(conn: &Connection, id: &str, completed: bool) -> AppResult<Task> {
-    let now = now_ms();
-    let tx = conn.unchecked_transaction()?;
-
-    let changed = if completed {
-        tx.execute(
-            "UPDATE tasks SET status = 'done', completed_at = ?, updated_at = ?
-              WHERE id = ? AND deleted_at IS NULL",
-            params![now, now, id],
-        )?
-    } else {
-        tx.execute(
-            "UPDATE tasks SET status = 'open', completed_at = NULL, updated_at = ?
-              WHERE id = ? AND deleted_at IS NULL",
-            params![now, id],
-        )?
-    };
-
-    if changed == 0 {
-        return Err(AppError::not_found("事项不存在或已删除"));
-    }
-
-    if completed {
-        // 完成即停止提醒，避免已完成事项继续打扰
-        tx.execute(
-            "UPDATE reminders SET enabled = 0, next_remind_at = NULL, updated_at = ?
-              WHERE task_id = ?",
-            params![now, id],
-        )?;
-    }
-
-    tx.commit()?;
+    crate::db::batch::set_one(
+        conn,
+        id,
+        if completed {
+            crate::db::batch::Action::Complete
+        } else {
+            crate::db::batch::Action::Reopen
+        },
+    )?;
     get_required(conn, id)
 }
 
 pub fn set_hidden(conn: &Connection, id: &str, hidden: bool) -> AppResult<Task> {
-    let now = now_ms();
-    let tx = conn.unchecked_transaction()?;
-
-    let changed = tx.execute(
-        "UPDATE tasks SET hidden = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL",
-        params![hidden as i64, now, id],
+    crate::db::batch::set_one(
+        conn,
+        id,
+        if hidden {
+            crate::db::batch::Action::Hide
+        } else {
+            crate::db::batch::Action::Unhide
+        },
     )?;
-    if changed == 0 {
-        return Err(AppError::not_found("事项不存在或已删除"));
-    }
-
-    if hidden {
-        // 隐藏后默认不再提醒
-        tx.execute(
-            "UPDATE reminders SET enabled = 0, next_remind_at = NULL, updated_at = ?
-              WHERE task_id = ?",
-            params![now, id],
-        )?;
-    }
-
-    tx.commit()?;
     get_required(conn, id)
 }
 
 pub fn trash(conn: &Connection, id: &str) -> AppResult<()> {
-    let now = now_ms();
-    let tx = conn.unchecked_transaction()?;
-    let changed = tx.execute(
-        "UPDATE tasks SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL",
-        params![now, now, id],
-    )?;
-    if changed == 0 {
-        return Err(AppError::not_found("事项不存在或已删除"));
-    }
-    tx.execute(
-        "UPDATE reminders SET enabled = 0, next_remind_at = NULL, updated_at = ? WHERE task_id = ?",
-        params![now, id],
-    )?;
-    tx.commit()?;
-    Ok(())
+    crate::db::batch::set_one(conn, id, crate::db::batch::Action::Trash)
 }
 
 pub fn restore(conn: &Connection, id: &str) -> AppResult<Task> {
-    let now = now_ms();
-    let changed = conn.execute(
-        "UPDATE tasks SET deleted_at = NULL, hidden = 0, updated_at = ?
-          WHERE id = ? AND deleted_at IS NOT NULL",
-        params![now, id],
-    )?;
-    if changed == 0 {
-        return Err(AppError::not_found("该事项不在回收站中"));
-    }
+    crate::db::batch::set_one(conn, id, crate::db::batch::Action::Restore)?;
     get_required(conn, id)
 }
 
 pub fn delete_permanent(conn: &Connection, id: &str) -> AppResult<()> {
-    // task_updates / reminders / handover_tasks 通过外键 ON DELETE CASCADE 一并清理
-    let changed = conn.execute("DELETE FROM tasks WHERE id = ?", params![id])?;
-    if changed == 0 {
-        return Err(AppError::not_found("事项不存在"));
-    }
-    Ok(())
+    // v3 交接条目通过 SET NULL 保留独立快照。
+    crate::db::batch::set_one(conn, id, crate::db::batch::Action::DeletePermanent)
 }
 
 pub fn duplicate(conn: &Connection, id: &str) -> AppResult<Task> {
@@ -443,6 +507,20 @@ pub fn duplicate(conn: &Connection, id: &str) -> AppResult<Task> {
 
 pub fn reorder(conn: &Connection, ordered_ids: &[String]) -> AppResult<()> {
     let tx = conn.unchecked_transaction()?;
+    let (clauses, _, values) = query_parts(&TaskFilter::default())?;
+    let scope: std::collections::HashSet<String> = {
+        let mut stmt = tx.prepare(&format!("SELECT t.id FROM tasks t WHERE {clauses}"))?;
+        let rows = stmt.query_map(params_from_iter(values.iter()), |row| {
+            row.get::<_, String>(0)
+        })?;
+        rows.collect::<Result<_, _>>()?
+    };
+    let supplied: std::collections::HashSet<_> = ordered_ids.iter().cloned().collect();
+    if supplied != scope || supplied.len() != ordered_ids.len() {
+        return Err(AppError::validation(
+            "旧排序接口必须提交完整事项范围；分页拖动请使用移动接口",
+        ));
+    }
     for (index, id) in ordered_ids.iter().enumerate() {
         tx.execute(
             "UPDATE tasks SET sort_order = ? WHERE id = ?",
@@ -457,15 +535,16 @@ pub fn counts(conn: &Connection) -> AppResult<Counts> {
     let (today_start, today_end) = local_day_bounds(0);
     let row = conn.query_row(
         "SELECT
-            (SELECT COUNT(*) FROM tasks WHERE deleted_at IS NULL AND hidden = 0),
-            (SELECT COUNT(*) FROM tasks WHERE deleted_at IS NULL AND hidden = 0
+            (SELECT COUNT(*) FROM tasks WHERE deleted_at IS NULL AND hidden = 0 AND archived = 0),
+            (SELECT COUNT(*) FROM tasks WHERE deleted_at IS NULL AND hidden = 0 AND archived = 0
                 AND COALESCE(recorded_at, created_at) >= ?1
                 AND COALESCE(recorded_at, created_at) < ?2),
-            (SELECT COUNT(*) FROM tasks WHERE deleted_at IS NULL AND hidden = 0 AND status = 'open'),
-            (SELECT COUNT(*) FROM tasks WHERE deleted_at IS NULL AND hidden = 0 AND status = 'open' AND priority <= 1),
-            (SELECT COUNT(*) FROM tasks WHERE deleted_at IS NULL AND hidden = 0 AND status = 'done'),
-            (SELECT COUNT(*) FROM tasks WHERE deleted_at IS NULL AND hidden = 1),
-            (SELECT COUNT(*) FROM tasks WHERE deleted_at IS NOT NULL)",
+            (SELECT COUNT(*) FROM tasks WHERE deleted_at IS NULL AND hidden = 0 AND archived = 0 AND status = 'open'),
+            (SELECT COUNT(*) FROM tasks WHERE deleted_at IS NULL AND hidden = 0 AND archived = 0 AND status = 'open' AND priority <= 1),
+            (SELECT COUNT(*) FROM tasks WHERE deleted_at IS NULL AND hidden = 0 AND archived = 0 AND status = 'done'),
+            (SELECT COUNT(*) FROM tasks WHERE deleted_at IS NULL AND hidden = 1 AND archived = 0),
+            (SELECT COUNT(*) FROM tasks WHERE deleted_at IS NOT NULL),
+            (SELECT COUNT(*) FROM tasks WHERE deleted_at IS NULL AND archived = 1)",
         params![today_start, today_end],
         |r| {
             Ok(Counts {
@@ -476,6 +555,7 @@ pub fn counts(conn: &Connection) -> AppResult<Counts> {
                 done: r.get(4)?,
                 hidden: r.get(5)?,
                 trash: r.get(6)?,
+                archived: r.get(7)?,
             })
         },
     )?;
@@ -688,14 +768,18 @@ mod tests {
         let task = new_task(&db, "隐藏事项", 2);
         db.with_conn(|conn| updates::add(conn, &task.id, "第一条进展", Some("张三")))
             .unwrap();
-        db.with_conn(|conn| set_hidden(conn, &task.id, true)).unwrap();
+        db.with_conn(|conn| set_hidden(conn, &task.id, true))
+            .unwrap();
 
         assert!(list_view(&db, "all").is_empty());
 
         let hidden = list_view(&db, "hidden");
         assert_eq!(hidden.len(), 1);
         assert_eq!(hidden[0].update_count, 1);
-        assert_eq!(hidden[0].latest_update_content.as_deref(), Some("第一条进展"));
+        assert_eq!(
+            hidden[0].latest_update_content.as_deref(),
+            Some("第一条进展")
+        );
     }
 
     #[test]
@@ -712,7 +796,8 @@ mod tests {
         assert!(restored.deleted_at.is_none());
 
         db.with_conn(|conn| trash(conn, &task.id)).unwrap();
-        db.with_conn(|conn| delete_permanent(conn, &task.id)).unwrap();
+        db.with_conn(|conn| delete_permanent(conn, &task.id))
+            .unwrap();
 
         let orphan: i64 = db
             .with_conn(|conn| {
@@ -820,7 +905,10 @@ mod tests {
         assert_eq!(copy.update_count, 0);
         assert_eq!(copy.priority, 1);
         assert_eq!(copy.department.as_deref(), Some("调度中心"));
-        assert!(copy.recorded_at >= task.recorded_at, "副本应使用新的记录时间");
+        assert!(
+            copy.recorded_at >= task.recorded_at,
+            "副本应使用新的记录时间"
+        );
     }
 
     #[test]

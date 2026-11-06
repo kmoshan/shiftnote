@@ -60,6 +60,7 @@ export const VIEW_LABELS: Record<string, string> = {
   focus: '重点事项',
   done: '已完成事项',
   hidden: '已隐藏事项',
+  archived: '已归档事项',
   trash: '回收站',
   search: '搜索结果',
 }
@@ -71,6 +72,7 @@ export const VIEW_HINTS: Record<string, string> = {
   focus: 'P0 紧急与 P1 重要的未完成事项',
   done: '已完成的事项，可取消完成或隐藏',
   hidden: '从列表隐藏的事项，记录仍然保留',
+  archived: '已完成并归档的事项，可取消归档或取消完成',
   trash: '已移入回收站的事项，可恢复或永久删除',
   search: '同时匹配标题、描述、负责部门与全部历史进展',
 }
