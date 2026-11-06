@@ -5,7 +5,15 @@
 ShiftNote 面向个人、值班人员和中小部门：用最少的操作记录一件事，持续追加处理进展，
 按优先级提醒，并在交接班时一键生成交接记录。它不是 OA / CRM，不要求登录，不依赖服务器。
 
-![技术栈](https://img.shields.io/badge/Tauri-2-24C8DB) ![Vue](https://img.shields.io/badge/Vue-3-42B883) ![SQLite](https://img.shields.io/badge/SQLite-本地-003B57)
+[![CI](https://github.com/kmoshan/shiftnote/actions/workflows/ci.yml/badge.svg)](https://github.com/kmoshan/shiftnote/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/kmoshan/shiftnote?display_name=release)](https://github.com/kmoshan/shiftnote/releases/latest)
+![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D4)
+
+### 下载安装
+
+前往 [Releases](https://github.com/kmoshan/shiftnote/releases/latest) 下载
+`ShiftNote_0.1.0_x64-setup.exe`（约 1.7 MB），双击安装即可，无需管理员权限。
+程序启动后数据保存在 `%APPDATA%\com.shiftnote.desktop\`，卸载不会主动删除数据。
 
 ---
 
