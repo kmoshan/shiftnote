@@ -186,7 +186,7 @@ impl Db {
         }
         {
             let guard = self.lock()?;
-            guard.backup(rusqlite::DatabaseName::Main, dest, None)?;
+            guard.backup(rusqlite::MAIN_DB, dest, None::<fn(rusqlite::backup::Progress)>)?;
         }
         Ok(std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0))
     }

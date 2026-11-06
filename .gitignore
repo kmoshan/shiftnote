@@ -17,4 +17,9 @@ release/
 *.db
 *.db-wal
 *.db-shm
+*.snbak
+*.vault.lock
+*.encrypted-tmp
 *.log
+playwright-report/
+test-results/

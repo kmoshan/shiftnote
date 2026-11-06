@@ -1,40 +1,32 @@
-# ShiftNote 开发环境变量（本机工具链安装在 D: 盘）
-#
-# 用法：在 PowerShell 中先执行
+# Dot-source before cargo / npm run tauri on Windows:
 #   . .\scripts\env.ps1
-# 再运行 npm / cargo / tauri 命令。
-#
-# 说明：Rust 的 msvc 目标需要 link.exe 与 Windows SDK 的 LIB/INCLUDE，
-# 这里等价于自动执行 vcvars64.bat 后固化下来的环境。
+# Resolves the installed MSVC toolchain; no machine-specific drive letters.
+$ErrorActionPreference = 'Stop'
 
-$env:RUSTUP_HOME = 'D:\dev\rust\rustup'
-$env:CARGO_HOME = 'D:\dev\rust\cargo'
-$env:CARGO_TARGET_DIR = 'D:\dev\target'
+$cargoBin = Join-Path $env:USERPROFILE '.cargo\bin'
+if (Test-Path -LiteralPath $cargoBin) {
+    $env:Path = $cargoBin + ';' + $env:Path
+}
 
-$msvcRoot = 'D:\dev\vsbt\VC\Tools\MSVC\14.44.35207'
-$sdkRoot = 'C:\Program Files (x86)\Windows Kits\10'
-$sdkVer = '10.0.22621.0'
+$vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+if (-not (Test-Path -LiteralPath $vswhere)) {
+    throw '未找到 Visual Studio Build Tools，请安装“使用 C++ 的桌面开发”和 Windows SDK。'
+}
+$visualStudioPath = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+if (-not $visualStudioPath) {
+    throw '未找到 MSVC x64 工具链，请安装 Visual Studio C++ Build Tools。'
+}
+$devShell = Join-Path $visualStudioPath 'Common7\Tools\Launch-VsDevShell.ps1'
+& $devShell -Arch amd64 -HostArch amd64 -SkipAutomaticLocation
+if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
+    throw '未找到 cargo，请安装 Rust MSVC stable 工具链。'
+}
+$env:RUSTUP_TOOLCHAIN = 'stable-x86_64-pc-windows-msvc'
 
-$env:INCLUDE = @(
-  "$msvcRoot\include",
-  'D:\dev\vsbt\VC\Auxiliary\VS\include',
-  "$sdkRoot\include\$sdkVer\ucrt",
-  "$sdkRoot\include\$sdkVer\um",
-  "$sdkRoot\include\$sdkVer\shared",
-  "$sdkRoot\include\$sdkVer\winrt",
-  "$sdkRoot\include\$sdkVer\cppwinrt"
-) -join ';'
-
-$env:LIB = @(
-  "$msvcRoot\lib\x64",
-  "$sdkRoot\lib\$sdkVer\ucrt\x64",
-  "$sdkRoot\lib\$sdkVer\um\x64"
-) -join ';'
-
-$pathParts = @(
-  'D:\dev\rust\cargo\bin',
-  "$msvcRoot\bin\HostX64\x64"
-) + ($env:Path -split ';')
-$env:Path = ($pathParts | Where-Object { $_ } | Select-Object -Unique) -join ';'
-
-Write-Host "[shiftnote] Rust/MSVC 环境已加载 (target: $env:CARGO_TARGET_DIR)" -ForegroundColor DarkGray
+# Keep compiler/test temporary files within this checkout. This also supports
+# machines where native child processes cannot write the user TEMP directory.
+$buildTemp = Join-Path (Split-Path -Parent $PSScriptRoot) 'audit.local\build-temp'
+New-Item -ItemType Directory -Path $buildTemp -Force | Out-Null
+$env:TMP = $buildTemp
+$env:TEMP = $buildTemp
+Write-Host '[shiftnote] MSVC x64 环境已加载' -ForegroundColor DarkGray

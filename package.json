@@ -1,8 +1,11 @@
 {
   "name": "shiftnote",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
+  "engines": {
+    "node": "^22.22.2 || ^24.15.0 || >=26"
+  },
   "description": "ShiftNote - 轻量级交接班管理与事项跟踪桌面应用",
   "scripts": {
     "dev": "vite",
@@ -12,7 +15,10 @@
     "typecheck": "vue-tsc --noEmit",
     "tauri": "tauri",
     "app:dev": "tauri dev",
-    "app:build": "tauri build"
+    "app:build": "tauri build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@lucide/vue": "^1.68.0",
@@ -22,14 +28,26 @@
     "vue": "^3.5.22",
     "vue-router": "^4.5.1"
   },
+  "overrides": {
+    "js-beautify": {
+      "glob": "14.0.3",
+      "editorconfig": {
+        "minimatch": "11.0.5"
+      }
+    }
+  },
   "devDependencies": {
+    "@playwright/test": "^1.65.0",
     "@tailwindcss/vite": "^4.1.14",
     "@tauri-apps/cli": "^2.9.0",
     "@types/node": "^26.6.6",
     "@vitejs/plugin-vue": "^6.0.1",
+    "@vue/test-utils": "^2.5.1",
+    "jsdom": "^26.1.0",
     "tailwindcss": "^4.1.14",
     "typescript": "~5.9.3",
     "vite": "^7.1.9",
+    "vitest": "^5.1.0",
     "vue-tsc": "^3.1.1"
   }
 }
